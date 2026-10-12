@@ -1,0 +1,5 @@
+# API routes - pass through to backend
+/api/* /api/:splat 200
+
+# SPA fallback - all other routes get index.html
+/* /index.html 200

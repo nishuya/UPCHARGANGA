@@ -1,0 +1,24 @@
+--- Original
++++ Fixed
+@@ -60,11 +60,22 @@
+   const normalizedDate = normalizeDateOnly(appointmentDate);
+   const today = normalizeDateOnly(getHospitalNow());
+ 
+   if (normalizedDate < today) {
+     throw new ApiError(400, 'Cannot book an appointment for a past date.');
+   }
+ 
++  // RE-FETCH DOCTOR TO ENSURE WE HAVE LATEST AVAILABILITY
++  // This prevents "fully booked" errors when doctor just updated their schedule
++  const freshDoctor = await Doctor.findOne({ _id: chain.doctor._id, isActive: true });
++  if (!freshDoctor) {
++    throw new ApiError(404, 'Doctor not found or inactive.');
++  }
++  
++  // Use fresh doctor data instead of chain.doctor which may be stale
++  chain.doctor = freshDoctor;
++
+   const maxAdvanceDate = new Date(today);
+   maxAdvanceDate.setUTCDate(maxAdvanceDate.getUTCDate() + MAX_BOOKING_ADVANCE_DAYS);
+   if (normalizedDate > maxAdvanceDate) {
+     throw new ApiError(400, `Appointments can only be booked up to ${MAX_BOOKING_ADVANCE_DAYS} days in advance.`);
