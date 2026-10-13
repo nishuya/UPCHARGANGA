@@ -59,6 +59,13 @@ app.use('/api/v1', routes);
 app.use((req, res, next) => {
   next(new ApiError(404, `Route ${req.originalUrl} not found`));
 });
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "UpcharGanga API is running",
+    status: "healthy",
+  });
+});
 
 // Must be registered LAST — Express identifies error middleware by arity (4 args).
 app.use(errorHandler);
