@@ -4,8 +4,8 @@
 # ==============================
 .env
 .env.*
-!.env.example
-!.env.sample
+.env.example
+.env.sample
 *.pem
 *.key
 secrets/
@@ -37,8 +37,8 @@ coverage/
 *.mdx
 *.rst
 *.txt
-!LICENSE.txt
-!CNAME
+LICENSE.txt
+CNAME
 
 # ==============================
 # Logs
@@ -88,7 +88,7 @@ mongodb-data/
 # Uploads and generated files
 # ==============================
 uploads/*
-!uploads/.gitkeep
+uploads/.gitkeep
 storage/
 generated/
 
