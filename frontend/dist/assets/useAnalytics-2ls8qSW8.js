@@ -1,0 +1,1 @@
+import{h as t}from"./index-Zq70qNG0.js";import{a as s}from"./admin.api-XaXLw3QJ.js";const m=(a=30)=>t({queryKey:["adminAnalytics",a],queryFn:()=>s({days:a}),select:e=>e.data.data,staleTime:6e4});export{m as u};

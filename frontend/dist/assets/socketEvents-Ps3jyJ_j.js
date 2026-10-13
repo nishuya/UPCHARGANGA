@@ -1,0 +1,1 @@
+const e=Object.freeze({PATIENT_VERIFIED:"patient:verified",PATIENT_CALLED:"patient:called",PATIENT_ETA_UPDATED:"patient:eta-updated",QUEUE_UPDATED:"queue:updated",QUEUE_SUBSCRIBE:"queue:subscribe",QUEUE_UNSUBSCRIBE:"queue:unsubscribe"});export{e as S};
