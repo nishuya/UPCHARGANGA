@@ -5,7 +5,7 @@ uploads/*
 !uploads/.gitkeep
 coverage/
 .DS_Store
-
+.env.example
 # ==============================
 # Environment variables & secrets
 # ==============================
