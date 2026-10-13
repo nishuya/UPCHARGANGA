@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "public": false,
+  "public":true,
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
   "env": {
