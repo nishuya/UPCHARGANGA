@@ -45,14 +45,6 @@ const AdminDepartmentsPage = lazy(() => import('../features/admin/pages/AdminDep
 const AdminCitiesPage = lazy(() => import('../features/admin/pages/AdminCitiesPage'));
 const AdminStaffPage = lazy(() => import('../features/admin/pages/AdminStaffPage'));
 
-/**
- * The full route tree. Patient, Reception, Doctor Assistant, and Admin
- * (including Departments/Cities) are fully built out.
- *
- * Optimized with React.lazy for route-level code splitting to defer loading
- * of heavy sections until they're actually navigated to. Suspense boundaries
- * show a loader while chunks are being fetched.
- */
 const AppRoutes = () => (
   <Routes>
     <Route path={ROUTES.HOME} element={<HomePage />} />
@@ -168,8 +160,14 @@ const AppRoutes = () => (
       </Route>
     </Route>
 
-    {/* Doctor Assistant (Panel 2) */}
-    <Route element={<ProtectedRoute allowedRoles={[USER_ROLES.DOCTOR_ASSISTANT]} />}>
+    {/* Doctor & Doctor Assistant (Panel 2) */}
+    <Route
+      element={
+        <ProtectedRoute
+          allowedRoles={[USER_ROLES.DOCTOR_ASSISTANT, USER_ROLES.DOCTOR]}
+        />
+      }
+    >
       <Route path={ROUTES.DOCTOR.ROOT} element={<DoctorLayout />}>
         <Route
           index

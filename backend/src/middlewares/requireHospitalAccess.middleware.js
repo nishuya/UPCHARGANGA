@@ -15,22 +15,20 @@ const ApiError = require('../errors/ApiError');
 
 /**
  * Middleware to ensure staff can only access resources from their assigned hospital
- * Attach hospital-scoped resource to req.resource for consistency with other authorization flows
  */
 const requireHospitalAccess = async (req, res, next) => {
   try {
-    // PATIENT role doesn't have hospital scope - skip this check
     if (req.user.role === 'patient') {
       return next();
     }
 
-    // ADMIN has full access
     if (req.user.role === 'admin') {
       return next();
     }
 
-    // RECEPTIONIST, DOCTOR, DOCTOR_ASSISTANT must have a hospital assignment
-    if (!req.user.hospital) {
+    const userHospitalId = req.user.hospital?._id || req.user.hospital;
+
+    if (!userHospitalId) {
       return next(
         new ApiError(
           403,
@@ -39,23 +37,22 @@ const requireHospitalAccess = async (req, res, next) => {
       );
     }
 
-    // If appointment ID is in params, verify it belongs to the staff member's hospital
     if (req.params.id || req.params.appointmentId) {
       const appointmentId = req.params.id || req.params.appointmentId;
 
       const appointment = await Appointment.findById(appointmentId);
       if (!appointment) {
-        // Return 404 (not found) instead of 403 to avoid information leakage
         return next(new ApiError(404, 'Appointment not found.'));
       }
 
-      if (appointment.hospital.toString() !== req.user.hospital.toString()) {
+      const appointmentHospitalId = appointment.hospital?._id || appointment.hospital;
+
+      if (appointmentHospitalId.toString() !== userHospitalId.toString()) {
         return next(
           new ApiError(403, 'Cannot access appointments from another hospital.')
         );
       }
 
-      // Attach appointment to request for use in controllers
       req.appointment = appointment;
     }
 

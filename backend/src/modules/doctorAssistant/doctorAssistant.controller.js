@@ -35,7 +35,6 @@ const callNextPatient = asyncHandler(async (req, res) => {
   const { doctor, date } = req.body;
   const { assignedDoctor } = req.user;
 
-  // SECURITY: Doctor assistants can ONLY access their assigned doctor's queue
   if (!assignedDoctor) {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
@@ -46,7 +45,6 @@ const callNextPatient = asyncHandler(async (req, res) => {
     throw new ApiError(403, "You can only access your assigned doctor's queue.");
   }
 
-  // Extract hospital ID from populated object or use if already a string/ID
   const hospitalId = req.user.hospital?._id || req.user.hospital;
 
   const { calledEntry, queue } = await doctorAssistantService.callNextPatient(
@@ -65,29 +63,20 @@ const callNextPatient = asyncHandler(async (req, res) => {
 });
 
 const startConsultation = asyncHandler(async (req, res) => {
-  console.log('🏥 [START CONSULTATION] Controller reached');
-  console.log('  appointmentId:', req.params.appointmentId);
-  console.log('  user._id:', req.user?._id);
-  console.log('  assignedDoctor:', req.user?.assignedDoctor);
-
   const { assignedDoctor } = req.user;
 
   if (!assignedDoctor) {
-    console.error('❌ [START CONSULTATION] No assignedDoctor');
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
-  // Extract ID from populated object or use if already a string/ID
   const assignedDoctorId = assignedDoctor._id || assignedDoctor;
   const hospitalId = req.user.hospital?._id || req.user.hospital;
 
-  console.log('✅ [START CONSULTATION] assignedDoctor OK, calling service...');
   const { appointment, entry } = await doctorAssistantService.startConsultation(
     req.params.appointmentId,
     hospitalId,
     assignedDoctorId
   );
-  console.log('✅ [START CONSULTATION] Service completed successfully');
   res
     .status(200)
     .json(new ApiResponse(200, { appointment, entry }, 'Consultation started.'));
@@ -100,7 +89,6 @@ const completeConsultation = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
-  // Extract ID from populated object or use if already a string/ID
   const assignedDoctorId = assignedDoctor._id || assignedDoctor;
   const hospitalId = req.user.hospital?._id || req.user.hospital;
 
@@ -128,7 +116,6 @@ const skipPatient = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
-  // Extract ID from populated object or use if already a string/ID
   const assignedDoctorId = assignedDoctor._id || assignedDoctor;
   const hospitalId = req.user.hospital?._id || req.user.hospital;
 
@@ -223,14 +210,17 @@ const createUnavailability = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
+  const assignedDoctorId = assignedDoctor._id || assignedDoctor;
+  const hospitalId = req.user.hospital?._id || req.user.hospital;
+
   const unavailability = await doctorAssistantService.createUnavailability(
-    assignedDoctor,
+    assignedDoctorId,
     startDate,
     endDate,
     reason,
     notes,
     req.user._id,
-    req.user.hospital
+    hospitalId
   );
   res
     .status(201)
@@ -244,9 +234,12 @@ const getUnavailability = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
+  const assignedDoctorId = assignedDoctor._id || assignedDoctor;
+  const hospitalId = req.user.hospital?._id || req.user.hospital;
+
   const unavailabilities = await doctorAssistantService.getUnavailability(
-    assignedDoctor,
-    req.user.hospital
+    assignedDoctorId,
+    hospitalId
   );
   res
     .status(200)
@@ -261,11 +254,14 @@ const updateUnavailability = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
+  const assignedDoctorId = assignedDoctor._id || assignedDoctor;
+  const hospitalId = req.user.hospital?._id || req.user.hospital;
+
   const unavailability = await doctorAssistantService.updateUnavailability(
     req.params.unavailabilityId,
-    assignedDoctor,
+    assignedDoctorId,
     { startDate, endDate, reason, notes },
-    req.user.hospital
+    hospitalId
   );
   res
     .status(200)
@@ -279,10 +275,13 @@ const deleteUnavailability = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'Your account is not assigned to a doctor.');
   }
 
+  const assignedDoctorId = assignedDoctor._id || assignedDoctor;
+  const hospitalId = req.user.hospital?._id || req.user.hospital;
+
   await doctorAssistantService.deleteUnavailability(
     req.params.unavailabilityId,
-    assignedDoctor,
-    req.user.hospital
+    assignedDoctorId,
+    hospitalId
   );
   res
     .status(200)

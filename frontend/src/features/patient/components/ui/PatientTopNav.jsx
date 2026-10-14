@@ -6,16 +6,6 @@ import { ROUTES } from '../../../../constants/routePaths';
 import UpcharGangaLogo from '../../../../assets/logo/UpcharGangaLogo';
 import NotificationBell from '../NotificationBell';
 
-/**
- * Premium UpcharGanga Patient Portal Top Navigation
- *
- * Horizontal navigation for patient-facing surface.
- * Features:
- * - Sticky header with brand logo
- * - Desktop horizontal nav, mobile hamburger
- * - Clean, professional, healthcare-focused styling
- * - Emerald green accent color
- */
 const NAV_ITEMS = [
   { label: 'Dashboard', path: ROUTES.PATIENT.ROOT, end: true },
   { label: 'Book Appointment', path: ROUTES.PATIENT.CHOOSE_CITY },
@@ -111,7 +101,10 @@ const PatientTopNav = () => {
               </div>
               <button
                 type="button"
-                onClick={logout}
+                onClick={() => {
+                  setIsMenuOpen(false);
+                  handleLogout();
+                }}
                 className="rounded-md border border-neutral-200 px-md py-2 text-sm font-medium text-neutral-600 transition-all duration-fast hover:border-upchar-500 hover:bg-upchar-50 hover:text-upchar-600"
               >
                 Log out

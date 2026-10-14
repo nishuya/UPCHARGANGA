@@ -2,8 +2,8 @@ const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 const authService = require('./auth.service');
 const {
-  refreshTokenCookieOptions,
-  clearRefreshTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+  clearRefreshTokenCookie,
 } = require('../../utils/cookie.util');
 
 const register = asyncHandler(async (req, res) => {
@@ -11,8 +11,14 @@ const register = asyncHandler(async (req, res) => {
 
   res
     .status(201)
-    .cookie('refreshToken', result.refreshToken, refreshTokenCookieOptions)
-    .json(new ApiResponse(201, { user: result.user, accessToken: result.accessToken }, 'Registered successfully. You are now logged in.'));
+    .cookie('refreshToken', result.refreshToken, getRefreshTokenCookieOptions())
+    .json(
+      new ApiResponse(
+        201,
+        { user: result.user, accessToken: result.accessToken },
+        'Registered successfully. You are now logged in.'
+      )
+    );
 });
 
 const login = asyncHandler(async (req, res) => {
@@ -20,29 +26,41 @@ const login = asyncHandler(async (req, res) => {
 
   res
     .status(200)
-    .cookie('refreshToken', refreshToken, refreshTokenCookieOptions)
+    .cookie('refreshToken', refreshToken, getRefreshTokenCookieOptions())
     .json(new ApiResponse(200, { user, accessToken }, 'Logged in successfully.'));
 });
 
 const refreshToken = asyncHandler(async (req, res) => {
   const incoming = req.cookies?.refreshToken;
 
-  const { user, accessToken, refreshToken: newRefreshToken } =
-    await authService.refreshAccessToken(incoming);
+  try {
+    const { user, accessToken, refreshToken: newRefreshToken } =
+      await authService.refreshAccessToken(incoming);
 
-  res
-    .status(200)
-    .cookie('refreshToken', newRefreshToken, refreshTokenCookieOptions)
-    .json(new ApiResponse(200, { user, accessToken }, 'Token refreshed.'));
+    res
+      .status(200)
+      .cookie('refreshToken', newRefreshToken, getRefreshTokenCookieOptions())
+      .json(new ApiResponse(200, { user, accessToken }, 'Token refreshed.'));
+  } catch (error) {
+    // If the refresh token is missing, expired, invalid, or revoked,
+    // immediately clear the cookie in the browser so stale cookies do not linger.
+    clearRefreshTokenCookie(res);
+    throw error;
+  }
 });
 
 const logout = asyncHandler(async (req, res) => {
-  await authService.logoutUser(req.user._id);
+  const userId = req.user?._id;
+  const incomingRefreshToken = req.cookies?.refreshToken;
 
-  res
-    .status(200)
-    .clearCookie('refreshToken', clearRefreshTokenCookieOptions)
-    .json(new ApiResponse(200, null, 'Logged out successfully.'));
+  await authService.logoutUser({
+    userId,
+    refreshToken: incomingRefreshToken,
+  });
+
+  clearRefreshTokenCookie(res);
+
+  res.status(200).json(new ApiResponse(200, null, 'Logged out successfully.'));
 });
 
 const getMe = asyncHandler(async (req, res) => {

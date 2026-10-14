@@ -5,9 +5,8 @@ import { ROUTES } from '../constants/routePaths';
 
 /**
  * Hook that handles logout with automatic redirect to login page.
- * Clears auth state, calls backend logout, and navigates to login.
- *
- * Usage: const handleLogout = useLogout();
+ * Immediately clears local auth state, revokes the backend refresh session,
+ * and replaces history with /login so Back navigation cannot return to protected pages.
  */
 export const useLogout = () => {
   const navigate = useNavigate();
@@ -15,15 +14,11 @@ export const useLogout = () => {
 
   const handleLogout = useCallback(async () => {
     try {
-      // Clear auth state (calls backend to revoke session, clears local token)
       await authLogout();
-      // Navigate to login page after logout is complete
-      navigate(ROUTES.LOGIN, { replace: true });
     } catch (error) {
-      // Even if logout fails, we've already cleared local state
-      // Navigate to login so user can log in again
       console.error('Logout error:', error);
-      navigate(ROUTES.LOGIN, { replace: true });
+    } finally {
+      navigate(ROUTES.LOGIN, { replace: true, state: null });
     }
   }, [authLogout, navigate]);
 

@@ -116,6 +116,12 @@ const userSchema = new Schema(
       select: false,
     },
 
+    // Server-side expiration timestamp for the active refresh-token session.
+    refreshTokenExpiresAt: {
+      type: Date,
+      select: false,
+    },
+
     // Bumped every time the password changes. Any access token issued
     // BEFORE this timestamp is rejected by the auth middleware, even if
     // it hasn't technically expired yet — closes the window where a leaked

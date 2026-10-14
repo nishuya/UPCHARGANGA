@@ -15,17 +15,23 @@ const generateAccessToken = (user) =>
 /**
  * Refresh token: long-lived (default 7d), sent ONLY as an httpOnly cookie
  * (never accessible to JS / never stored in localStorage — that's what
- * protects it from XSS token theft). Holds only {id}; role is re-derived
+ * protects it from XSS token theft). Holds {id, jti}; role is re-derived
  * from the DB on refresh so a role change takes effect without waiting for
- * the old access token to expire.
+ * the old access token to expire, and jti guarantees every rotated token
+ * is unique even when issued within the same second.
  */
 const generateRefreshToken = (user) =>
-  jwt.sign({ id: user._id.toString() }, config.jwt.refreshSecret, {
-    expiresIn: config.jwt.refreshExpiry,
-  });
+  jwt.sign(
+    { id: user._id.toString(), jti: crypto.randomUUID() },
+    config.jwt.refreshSecret,
+    {
+      expiresIn: config.jwt.refreshExpiry,
+    }
+  );
 
 const verifyAccessToken = (token) => jwt.verify(token, config.jwt.accessSecret);
 const verifyRefreshToken = (token) => jwt.verify(token, config.jwt.refreshSecret);
+const decodeToken = (token) => jwt.decode(token);
 
 /**
  * We NEVER store a raw refresh token in the database. Only its SHA-256
@@ -40,5 +46,6 @@ module.exports = {
   generateRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
+  decodeToken,
   hashToken,
 };

@@ -6,20 +6,43 @@
  * close/refresh, forcing a silent re-authentication via that httpOnly
  * cookie (see AuthContext's bootstrap effect) rather than sitting
  * somewhere an XSS payload could read it.
- *
- * A standalone module (not React state) so apiClient.js can read/write it
- * without importing AuthContext — that import would go the other way
- * (AuthContext -> apiClient), and a two-way import between them would be
- * a circular dependency.
  */
 let accessToken = null;
+let sessionEpoch = 0;
+
+const LEGACY_STORAGE_KEYS = [
+  'accessToken',
+  'refreshToken',
+  'token',
+  'authToken',
+  'auth',
+  'user',
+  'upcharganga_auth',
+  'upcharganga_user',
+];
+
+export const clearLegacyAuthStorage = () => {
+  if (typeof window === 'undefined') return;
+  for (const key of LEGACY_STORAGE_KEYS) {
+    try {
+      window.localStorage?.removeItem(key);
+      window.sessionStorage?.removeItem(key);
+    } catch {
+      // Ignore storage access errors in restricted browsing modes
+    }
+  }
+};
 
 export const getAccessToken = () => accessToken;
 
+export const getSessionEpoch = () => sessionEpoch;
+
 export const setAccessToken = (token) => {
-  accessToken = token;
+  accessToken = token || null;
 };
 
 export const clearAccessToken = () => {
   accessToken = null;
+  sessionEpoch += 1;
+  clearLegacyAuthStorage();
 };

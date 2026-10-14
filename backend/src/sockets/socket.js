@@ -46,31 +46,24 @@ const validateDoctorAccess = async (doctorId, userHospitalId, userRole) => {
   return doctor;
 };
 
-/**
- * Initializes the Socket.IO server exactly once, attached to the SAME
- * HTTP server Express listens on. This must only ever be called from
- * server.js. Calling it twice would create a second, independent
- * Socket.IO instance sharing no state with the first — every event
- * emitted through the "wrong" instance would silently vanish, and worse,
- * a client that somehow connected to both would receive every event
- * twice. The guard below makes that mistake fail loudly instead.
- */
 const initializeSocket = (httpServer) => {
   if (io) {
     throw new Error('Socket.IO has already been initialized — initializeSocket() must only be called once.');
   }
 
+  const allowedOrigins =
+    Array.isArray(config.clientUrls) && config.clientUrls.length
+      ? config.clientUrls
+      : [config.clientUrl];
+
   io = new Server(httpServer, {
     cors: {
-      origin: config.clientUrl,
+      origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
       credentials: true,
     },
   });
 
   // JWT handshake authentication — mirrors the REST `protect` middleware.
-  // A socket that fails this check never reaches the connection handler;
-  // the client's `connect_error` event fires instead. Client connects as:
-  //   io(url, { auth: { token: accessToken } })
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) {
@@ -97,48 +90,34 @@ const initializeSocket = (httpServer) => {
     }
   });
 
-  // Registered exactly ONCE, here. Every socket's event handlers are
-  // wired inside this single handler — there is no second `io.on('connection', ...)`
-  // anywhere else in the codebase that could cause a client event to be
-  // processed (and thus responded to) more than once.
   io.on('connection', (socket) => {
     const { id, role, hospital, assignedDoctor } = socket.user;
 
     console.log(`[SOCKET] User connected: ${id} (role: ${role})`);
 
-    // Every patient automatically joins their own private room — this is
-    // where "Notify Patient" events (verified, called, ETA updates) land.
     if (role === USER_ROLES.PATIENT) {
       socket.join(patientRoom(id));
     }
 
-    // Staff members may join hospital-wide room for availability updates
     if ([USER_ROLES.RECEPTIONIST, USER_ROLES.DOCTOR_ASSISTANT, USER_ROLES.DOCTOR, USER_ROLES.ADMIN].includes(role)) {
       if (role === USER_ROLES.ADMIN) {
-        // Admin joins all hospital rooms they need (can be subscribed to multiple)
-        socket.join(hospitalRoom('admin')); // Special admin broadcast channel
+        socket.join(hospitalRoom('admin'));
       } else if (hospital) {
-        // Staff joins only their own hospital room
         socket.join(hospitalRoom(hospital.toString()));
       }
     }
 
-    // Staff explicitly opt into the specific doctor/date queue they're
-    // currently viewing, with full authorization checks.
     socket.on(SOCKET_EVENTS.QUEUE_SUBSCRIBE, async ({ doctor, date } = {}) => {
       try {
         if (!doctor || !date) {
           return socket.emit('error', { message: 'doctor and date are required' });
         }
 
-        // Authorization: verify user has permission to view this doctor's queue
         switch (role) {
           case USER_ROLES.PATIENT:
-            // Patients cannot subscribe to queue rooms
             return socket.emit('error', { message: 'Patients cannot subscribe to staff queues' });
 
           case USER_ROLES.RECEPTIONIST:
-            // Receptionists can only view queues for doctors in their hospital
             if (!hospital) {
               return socket.emit('error', { message: 'Your account is not assigned to a hospital' });
             }
@@ -146,7 +125,6 @@ const initializeSocket = (httpServer) => {
             break;
 
           case USER_ROLES.DOCTOR_ASSISTANT:
-            // Assistants can only view queues for their assigned doctor
             if (!assignedDoctor || assignedDoctor.toString() !== doctor) {
               return socket.emit('error', { message: 'You are not assigned to this doctor' });
             }
@@ -157,14 +135,12 @@ const initializeSocket = (httpServer) => {
             break;
 
           case USER_ROLES.DOCTOR:
-            // Doctors can only view their own queues
             if (doctor !== id) {
               return socket.emit('error', { message: 'You can only view your own queue' });
             }
             break;
 
           case USER_ROLES.ADMIN:
-            // Admin can view any queue
             await validateDoctorAccess(doctor, hospital, role);
             break;
 
@@ -193,12 +169,6 @@ const initializeSocket = (httpServer) => {
   return io;
 };
 
-/**
- * Accessor used by socketEmitter.js. Throws loudly rather than silently
- * returning null/undefined if something tries to emit before the server
- * has started up — a missing event should never be mistaken for an
- * intentional no-op.
- */
 const getIO = () => {
   if (!io) {
     throw new Error('Socket.IO has not been initialized. Call initializeSocket(httpServer) first.');

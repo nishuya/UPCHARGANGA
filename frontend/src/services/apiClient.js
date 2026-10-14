@@ -1,5 +1,10 @@
 import axios from 'axios';
-import { getAccessToken, setAccessToken, clearAccessToken } from './tokenStore';
+import {
+  getAccessToken,
+  setAccessToken,
+  clearAccessToken,
+  getSessionEpoch,
+} from './tokenStore';
 
 const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
 
@@ -11,53 +16,76 @@ export const apiClient = axios.create({
 
 // A separate, interceptor-free instance for the refresh call itself.
 // Using `apiClient` here would let a 401 FROM /auth/refresh-token
-// re-trigger apiClient's own response interceptor below — exactly the
-// infinite loop this whole mechanism exists to prevent.
-const refreshClient = axios.create({ baseURL, withCredentials: true });
+// re-trigger apiClient's own response interceptor below.
+const refreshClient = axios.create({
+  baseURL,
+  withCredentials: true,
+  timeout: 15000,
+});
 
 apiClient.interceptors.request.use((config) => {
   const token = getAccessToken();
-  if (token) {
+  if (token && !config.headers?.Authorization) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
 /**
- * Coordinates concurrent 401s. If several requests fail at once because
- * the access token just expired, exactly ONE refresh call fires — every
- * other failing request awaits that SAME in-flight promise instead of
- * each independently calling /auth/refresh-token (which would each try
- * to rotate the same refresh token; only the first would succeed, and
- * the rest would incorrectly log the user out). This is the frontend
- * mirror of the "avoid duplicate events" discipline used throughout the
- * backend's socket layer, applied here to network requests instead.
+ * Single-flight refresh coordinator shared by BOTH:
+ * 1. AuthContext's initial bootstrap (`refreshTokenRequest`)
+ * 2. apiClient's 401 response interceptor
+ *
+ * This guarantees that React 18 StrictMode double-mounts or concurrent 401
+ * responses never fire parallel POST /auth/refresh-token requests with the
+ * same single-use refresh token cookie.
  */
 let refreshPromise = null;
 
-const performRefresh = () => {
+export const refreshSession = () => {
   if (!refreshPromise) {
+    const startEpoch = getSessionEpoch();
+
     refreshPromise = refreshClient
       .post('/auth/refresh-token')
-      .then(({ data }) => {
-        const token = data?.data?.accessToken ?? null;
-        setAccessToken(token);
-        return token;
+      .then((response) => {
+        // If logout/clearAccessToken happened while this request was in flight,
+        // discard the refreshed token so a logged-out session is never restored.
+        if (getSessionEpoch() !== startEpoch) {
+          const abortErr = new Error('Session was cleared during token refresh.');
+          abortErr.isCancelledByLogout = true;
+          throw abortErr;
+        }
+
+        const token = response?.data?.data?.accessToken ?? null;
+        if (token) {
+          setAccessToken(token);
+        }
+        return response;
       })
       .finally(() => {
         refreshPromise = null;
       });
   }
+
   return refreshPromise;
+};
+
+const performRefresh = async () => {
+  const response = await refreshSession();
+  return response?.data?.data?.accessToken ?? null;
 };
 
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const { config, response } = error;
-    const isAuthEndpoint = ['/auth/login', '/auth/register', '/auth/refresh-token', '/auth/logout'].some((path) =>
-      config?.url?.includes(path)
-    );
+    const isAuthEndpoint = [
+      '/auth/login',
+      '/auth/register',
+      '/auth/refresh-token',
+      '/auth/logout',
+    ].some((path) => config?.url?.includes(path));
 
     if (response?.status === 401 && config && !config._retried && !isAuthEndpoint) {
       config._retried = true; // exactly one retry attempt per request — never a retry loop
@@ -65,16 +93,17 @@ apiClient.interceptors.response.use(
       try {
         const token = await performRefresh();
         if (token) {
+          config.headers = config.headers || {};
           config.headers.Authorization = `Bearer ${token}`;
           return apiClient(config);
         }
       } catch {
-        // Refresh itself failed (refresh token expired/invalid/reused) —
-        // the session is genuinely over. Decoupled from AuthContext via a
-        // DOM event, the same pattern tokenStore.js uses, so this file
-        // never needs to import React context.
+        // Refresh itself failed (refresh token expired/invalid/revoked) —
+        // clear local token state and notify AuthContext.
         clearAccessToken();
-        window.dispatchEvent(new Event('auth:logout'));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('auth:logout'));
+        }
       }
     }
 

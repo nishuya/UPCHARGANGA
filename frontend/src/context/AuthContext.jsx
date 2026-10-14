@@ -1,31 +1,33 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { setAccessToken, clearAccessToken } from '../services/tokenStore';
+import { getAccessToken, setAccessToken, clearAccessToken } from '../services/tokenStore';
+import { queryClient } from '../services/queryClient';
 import { connectSocket, disconnectSocket } from '../sockets/socketClient';
 import { loginRequest, logoutRequest, refreshTokenRequest } from '../features/auth/services/auth.api';
 
 const AuthContext = createContext(undefined);
 
 /**
- * Owns the app's ONE piece of client-side auth state: the current user
- * (or null) and a loading flag for the initial bootstrap. The access
- * token itself deliberately does NOT live here as React state — it lives
- * in tokenStore.js (see that file for why), so a token refresh never
- * needs to trigger a re-render of everything that reads useAuth().
+ * Owns client-side auth state: the current user (or null) and a loading flag
+ * for the initial session bootstrap.
  */
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until bootstrap finishes
 
   const handleAuthenticated = useCallback((data) => {
+    if (!data?.accessToken || !data?.user) {
+      return;
+    }
     setAccessToken(data.accessToken);
     setUser(data.user);
-    connectSocket(); // (re)connect now that tokenStore has a fresh token
+    connectSocket();
   }, []);
 
   const clearSession = useCallback(() => {
     clearAccessToken();
     setUser(null);
     disconnectSocket();
+    queryClient.clear();
   }, []);
 
   const login = useCallback(
@@ -38,50 +40,46 @@ export const AuthProvider = ({ children }) => {
   );
 
   const logout = useCallback(async () => {
+    // Capture current access token before clearing local state so the backend
+    // can identify the user even if only the Authorization header or only the
+    // refreshToken cookie is available.
+    const tokenBeforeLogout = getAccessToken();
+
+    // Immediately clear local auth state, in-memory token, socket, and query cache
+    // so protected routes stop rendering authenticated content immediately.
+    clearSession();
+
     try {
-      // Call the backend logout endpoint to revoke the refresh token session
-      // and clear the server-side refresh token hash
-      await logoutRequest();
+      await logoutRequest(tokenBeforeLogout);
+      return { revokedOnServer: true };
     } catch (error) {
-      // Even if the logout request fails (network error, server error),
-      // we still clear the local state. A user clicking "log out" expects
-      // to be logged out of THIS tab immediately, regardless of the server
-      // round-trip outcome.
-      console.error('Logout request failed (clearing local state anyway):', error.message);
-    } finally {
-      // Always clear local state, even if the network call fails (e.g. offline).
-      // The browser's cookie clearing happens on the server response, but if
-      // the request never reaches the server, we clear locally to ensure the
-      // UI is not stuck showing authenticated content.
-      clearSession();
+      console.warn(
+        'Server logout request failed; local session was cleared immediately:',
+        error.message
+      );
+      return { revokedOnServer: false, error };
     }
   }, [clearSession]);
 
-  // On first load and on page refresh, there is no access token in memory
-  // (by design — see tokenStore.js). This silently attempts a refresh using
-  // the httpOnly refresh-token cookie, so a page reload doesn't force a fresh
-  // login as long as a valid session cookie still exists.
-  //
-  // This effect runs ONCE on mount (via empty dependency array) and must
-  // complete before ProtectedRoute allows any navigation decisions.
+  // On initial app load or page refresh, restore the session using the
+  // persistent httpOnly refresh-token cookie before ProtectedRoute makes
+  // any redirect decisions.
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
         const { data } = await refreshTokenRequest();
-        if (!cancelled) {
+        if (!cancelled && data?.data?.user && data?.data?.accessToken) {
           handleAuthenticated(data.data);
+        } else if (!cancelled) {
+          clearSession();
         }
       } catch (error) {
-        // The refresh endpoint returned an error (401, etc.) or the request failed.
-        // Either way, there's no valid session, so clear the local state.
         if (!cancelled) {
-          console.log('Session restore failed (user not authenticated):', error.response?.status || error.message);
           clearSession();
         }
       } finally {
-        // Bootstrap complete — ProtectedRoute can now make route decisions.
         if (!cancelled) {
           setIsLoading(false);
         }
@@ -91,18 +89,16 @@ export const AuthProvider = ({ children }) => {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [handleAuthenticated, clearSession]);
 
-  // apiClient dispatches this when a token refresh fails mid-session
-  // (e.g. the refresh token itself expired, was reused, or the session
-  // was revoked on the server) — see services/apiClient.js. A DOM event,
-  // not a direct import, is what lets that file trigger a logout without
-  // importing React/context at all.
   useEffect(() => {
     const handleForcedLogout = () => clearSession();
     window.addEventListener('auth:logout', handleForcedLogout);
-    return () => window.removeEventListener('auth:logout', handleForcedLogout);
+    window.addEventListener('socket:auth-failed', handleForcedLogout);
+    return () => {
+      window.removeEventListener('auth:logout', handleForcedLogout);
+      window.removeEventListener('socket:auth-failed', handleForcedLogout);
+    };
   }, [clearSession]);
 
   const value = useMemo(
@@ -112,8 +108,9 @@ export const AuthProvider = ({ children }) => {
       isLoading,
       login,
       logout,
+      clearSession,
     }),
-    [user, isLoading, login, logout]
+    [user, isLoading, login, logout, clearSession]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

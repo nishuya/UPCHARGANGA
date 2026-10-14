@@ -1,5 +1,3 @@
-# API routes - pass through to backend
-/api/* /api/:splat 200
-
-# SPA fallback - all other routes get index.html
+# SPA fallback - serve index.html for all client-side routes (Render, Netlify, Cloudflare Pages)
+# Static files in /assets and root files with extensions are served directly before this rule.
 /* /index.html 200

@@ -12,33 +12,39 @@
 
 const Queue = require('../modules/queue/queue.model');
 const ApiError = require('../errors/ApiError');
+const { USER_ROLES } = require('../constants/enums');
+
+const extractIdString = (val) => {
+  if (!val) return null;
+  const id = val._id || val;
+  return id.toString ? id.toString() : String(id);
+};
 
 const authorizeQueueAccess = async (req, res, next) => {
   try {
     const { doctorId, queueId } = req.params;
 
-    // For routes with :doctorId/:date, we need to resolve the doctor
-    // For routes with :queueId, we need to resolve the queue
     let queue;
     let doctor;
 
     if (queueId) {
-      // Resolve queue by ID
       queue = await Queue.findById(queueId);
       if (!queue) {
         return next(new ApiError(404, 'Queue not found.'));
       }
       doctor = queue.doctor;
     } else if (doctorId) {
-      // Doctor ID provided, will need to check hospital/assignment
       doctor = doctorId;
     }
 
-    // Role-based access control
+    const userHospitalId = extractIdString(req.user?.hospital);
+    const userAssignedDoctorId = extractIdString(req.user?.assignedDoctor);
+    const targetDoctorId = extractIdString(doctor);
+    const queueHospitalId = extractIdString(queue?.hospital);
+
     switch (req.user.role) {
+      case USER_ROLES.PATIENT:
       case 'patient':
-        // Patients can view queues (but will see only their own entry - filtered in controller)
-        // Patients CANNOT modify any queue operations
         if (req.method !== 'GET') {
           return next(
             new ApiError(403, 'Patients cannot perform queue operations.')
@@ -46,57 +52,61 @@ const authorizeQueueAccess = async (req, res, next) => {
         }
         break;
 
+      case USER_ROLES.RECEPTIONIST:
       case 'receptionist':
-        // Receptionists can access queues only for their assigned hospital
-        if (!req.user.hospital) {
+        if (!userHospitalId) {
           return next(
             new ApiError(403, 'Your account is not assigned to a hospital.')
           );
         }
 
-        if (queue && queue.hospital.toString() !== req.user.hospital.toString()) {
+        if (queueHospitalId && queueHospitalId !== userHospitalId) {
           return next(
             new ApiError(403, 'Cannot access queue from another hospital.')
           );
         }
         break;
 
+      case USER_ROLES.DOCTOR:
+      case USER_ROLES.DOCTOR_ASSISTANT:
       case 'doctor':
       case 'doctor-assistant':
-        // Doctors/assistants can access queues only for doctors they're assigned to
-        if (!req.user.hospital) {
+        if (!userHospitalId) {
           return next(
             new ApiError(403, 'Your account is not assigned to a hospital.')
           );
         }
 
-        // Verify the doctor is assigned to this user (schema field is assignedDoctor, singular)
-        if (req.user.role === USER_ROLES.DOCTOR_ASSISTANT) {
-          // Doctor assistants have exactly one assigned doctor
-          if (!req.user.assignedDoctor || req.user.assignedDoctor.toString() !== doctor?.toString()) {
+        if (
+          req.user.role === USER_ROLES.DOCTOR_ASSISTANT ||
+          req.user.role === 'doctor-assistant'
+        ) {
+          if (userAssignedDoctorId && targetDoctorId && userAssignedDoctorId !== targetDoctorId) {
             return next(
               new ApiError(403, 'You are not assigned to this doctor.')
             );
           }
-        } else if (req.user.role === USER_ROLES.DOCTOR) {
-          // Doctors can access their own queues
-          if (doctor?.toString() !== req.user._id.toString()) {
+        } else if (req.user.role === USER_ROLES.DOCTOR || req.user.role === 'doctor') {
+          if (
+            targetDoctorId &&
+            targetDoctorId !== extractIdString(req.user._id) &&
+            (!userAssignedDoctorId || userAssignedDoctorId !== targetDoctorId)
+          ) {
             return next(
               new ApiError(403, 'You can only access your own queue.')
             );
           }
         }
 
-        // Verify doctor is in user's hospital
-        if (queue && queue.hospital.toString() !== req.user.hospital.toString()) {
+        if (queueHospitalId && queueHospitalId !== userHospitalId) {
           return next(
             new ApiError(403, 'Doctor is not in your assigned hospital.')
           );
         }
         break;
 
+      case USER_ROLES.ADMIN:
       case 'admin':
-        // Admin has full access
         break;
 
       default:
@@ -105,7 +115,6 @@ const authorizeQueueAccess = async (req, res, next) => {
         );
     }
 
-    // Attach resolved queue to request for use in controllers
     if (queue) {
       req.queue = queue;
     }

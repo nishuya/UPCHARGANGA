@@ -2,18 +2,9 @@ const config = require('../config/env');
 
 /**
  * Helper to extract the domain from a URL, e.g.:
- * - http://localhost:5000 -> null (let browser use default, usually localhost)
+ * - http://localhost:5000 -> undefined (let browser use default, usually localhost)
  * - https://api.upcharganga.com -> .upcharganga.com (subdomain-aware, will match api and www)
  * - https://upcharganga.com -> .upcharganga.com
- *
- * Returns null for localhost (browser will use the current host) or the root domain
- * prefixed with a dot for cross-subdomain sharing. The dot prefix allows the cookie
- * to be sent to any subdomain of the root domain (e.g., api.example.com,
- * frontend.example.com, etc.), which is important for deployments where the backend
- * and frontend live on different subdomains.
- *
- * In production, make sure your CLIENT_URL and backend host are on the same root
- * domain or explicitly set COOKIE_DOMAIN in your environment.
  */
 const extractDomainFromUrl = (url) => {
   if (!url) return undefined;
@@ -22,13 +13,10 @@ const extractDomainFromUrl = (url) => {
     const parsed = new URL(url);
     const host = parsed.hostname;
 
-    // localhost, 127.0.0.1, or other loopback — let the browser use default
     if (host === 'localhost' || host.startsWith('127.') || host === '::1') {
       return undefined;
     }
 
-    // Extract root domain: for 'api.example.com' -> '.example.com'
-    // For 'example.com' -> '.example.com'
     const parts = host.split('.');
     if (parts.length > 1) {
       return '.' + parts.slice(-2).join('.');
@@ -40,61 +28,112 @@ const extractDomainFromUrl = (url) => {
   }
 };
 
-/**
- * Refresh token cookie options:
- * - httpOnly: JavaScript on the frontend can NEVER read this cookie — the
- *   main defense against XSS-based token theft.
- * - secure: only sent over HTTPS in production.
- * - sameSite: 'strict' blocks the cookie from being sent on cross-site
- *   requests — a strong default CSRF defense for the refresh endpoint.
- * - path: scoped to the refresh endpoint only, so the cookie isn't even
- *   transmitted on unrelated API calls.
- * - domain: allows the cookie to be sent from frontend to backend when they
- *   are on different subdomains of the same root domain. In development
- *   (localhost), domain is undefined, letting the browser use the current host.
- *   In production, extracted from the backend's own host (server-side, we know
- *   what host we're running on). For explicit control, set COOKIE_DOMAIN env var.
- */
 const getCookieDomain = () => {
-  // Explicit override from env var — useful for complex deployments
   if (process.env.COOKIE_DOMAIN) {
-    return process.env.COOKIE_DOMAIN;
+    return process.env.COOKIE_DOMAIN.trim() || undefined;
+  }
+  return config.cookie?.domain || undefined;
+};
+
+const getSameSiteAndSecure = () => {
+  const isProd = config.env === 'production';
+  const configuredSameSite = process.env.COOKIE_SAME_SITE
+    ? process.env.COOKIE_SAME_SITE.trim().toLowerCase()
+    : config.cookie?.sameSite || (isProd ? 'none' : 'lax');
+
+  const secure =
+    process.env.COOKIE_SECURE !== undefined
+      ? process.env.COOKIE_SECURE === 'true'
+      : configuredSameSite === 'none'
+        ? true
+        : isProd;
+
+  return {
+    sameSite: configuredSameSite,
+    secure,
+  };
+};
+
+const getCookiePath = () => process.env.COOKIE_PATH || config.cookie?.path || '/api/v1/auth';
+
+/**
+ * Builds the options used when setting the persistent httpOnly refresh-token cookie.
+ * - httpOnly: true (inaccessible to JavaScript, mitigating XSS token theft)
+ * - secure: true in production / HTTPS (required when sameSite === 'none')
+ * - sameSite: 'none' in production (allows cross-domain frontend->backend XHR with credentials),
+ *   'lax' in local HTTP development so cookies work across localhost ports and browser restarts
+ * - path: '/api/v1/auth' so the cookie is sent to BOTH /api/v1/auth/refresh-token AND /api/v1/auth/logout,
+ *   without being sent on unrelated resource endpoints
+ * - maxAge: matches REFRESH_TOKEN_EXPIRY so the browser persists the cookie on disk across browser restarts
+ */
+const getRefreshTokenCookieOptions = () => {
+  const { sameSite, secure } = getSameSiteAndSecure();
+  const domain = getCookieDomain();
+  const maxAge = config.jwt.refreshExpiryMs;
+
+  const options = {
+    httpOnly: true,
+    secure,
+    sameSite,
+    path: getCookiePath(),
+    maxAge,
+  };
+
+  if (domain) {
+    options.domain = domain;
   }
 
-  // In production, extract from the actual server host (not CLIENT_URL)
-  // The cookie is set by the backend, so it should match the backend's domain
-  if (config.env === 'production') {
-    // If the app is behind a proxy (e.g., Render, Vercel), the Host header
-    // reflects the actual served domain. We extract from that if available.
-    // For now, return undefined and let the browser infer the domain from
-    // the request origin. This is safe as long as frontend and backend
-    // are on the same domain/subdomain structure.
-    return undefined;
+  return options;
+};
+
+/**
+ * Builds the matching options used to clear the refresh-token cookie on logout or invalid refresh.
+ * Must use the exact same path, domain, sameSite, secure, and httpOnly flags as creation.
+ */
+const getClearRefreshTokenCookieOptions = (overridePath) => {
+  const { sameSite, secure } = getSameSiteAndSecure();
+  const domain = getCookieDomain();
+
+  const options = {
+    httpOnly: true,
+    secure,
+    sameSite,
+    path: overridePath || getCookiePath(),
+  };
+
+  if (domain) {
+    options.domain = domain;
   }
 
-  // In development, always undefined (use browser default, typically localhost)
-  return undefined;
+  return options;
 };
 
-const refreshTokenCookieOptions = {
-  httpOnly: true,
-  secure: config.env === 'production',
-  sameSite: 'strict',
-  path: '/api/v1/auth/refresh-token',
-  maxAge: config.jwt.refreshExpiryMs,
-  domain: getCookieDomain(),
+/**
+ * Clears the refreshToken cookie on both the canonical '/api/v1/auth' path and
+ * the legacy '/api/v1/auth/refresh-token' path (in case a user's browser still holds
+ * a cookie issued before the path was widened to '/api/v1/auth').
+ */
+const clearRefreshTokenCookie = (res) => {
+  const canonicalOptions = getClearRefreshTokenCookieOptions();
+  res.clearCookie('refreshToken', canonicalOptions);
+
+  if (canonicalOptions.path !== '/api/v1/auth/refresh-token') {
+    res.clearCookie(
+      'refreshToken',
+      getClearRefreshTokenCookieOptions('/api/v1/auth/refresh-token')
+    );
+  }
+  return res;
 };
 
-const clearRefreshTokenCookieOptions = {
-  httpOnly: true,
-  secure: config.env === 'production',
-  sameSite: 'strict',
-  path: '/api/v1/auth/refresh-token',
-  domain: getCookieDomain(),
-};
+const refreshTokenCookieOptions = getRefreshTokenCookieOptions();
+const clearRefreshTokenCookieOptions = getClearRefreshTokenCookieOptions();
 
 module.exports = {
   refreshTokenCookieOptions,
   clearRefreshTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+  getClearRefreshTokenCookieOptions,
+  clearRefreshTokenCookie,
   extractDomainFromUrl,
 };

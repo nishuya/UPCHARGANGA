@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import PremiumAuthLayout from '../components/PremiumAuthLayout';
 import Field from '../../patient/components/ui/PField';
 import Button from '../../patient/components/ui/PButton';
@@ -8,33 +8,42 @@ import { ROUTES } from '../../../constants/routePaths';
 import { USER_ROLES } from '../../../constants/roles';
 import { getApiErrorMessage } from '../../../utils/apiError';
 
-const ROLE_HOME = {
+export const ROLE_HOME = {
   [USER_ROLES.PATIENT]: ROUTES.PATIENT.ROOT,
   [USER_ROLES.RECEPTIONIST]: ROUTES.RECEPTION?.ROOT,
   [USER_ROLES.DOCTOR_ASSISTANT]: ROUTES.DOCTOR?.ROOT,
+  [USER_ROLES.DOCTOR]: ROUTES.DOCTOR?.ROOT,
   [USER_ROLES.ADMIN]: ROUTES.ADMIN?.ROOT,
 };
 
-/**
- * Premium UpcharGanga Login Page
- *
- * Features:
- * - Two-column layout on desktop (branding + form)
- * - Single column on mobile
- * - Healthcare-focused messaging
- * - Professional form styling
- * - Password visibility toggle
- * - Error handling
- * - Loading state
- */
+const getRedirectTargetForUser = (user, fromPath) => {
+  const roleRoot = ROLE_HOME[user?.role] || ROUTES.HOME;
+  if (
+    typeof fromPath === 'string' &&
+    fromPath.startsWith('/') &&
+    roleRoot !== ROUTES.HOME &&
+    fromPath.startsWith(roleRoot)
+  ) {
+    return fromPath;
+  }
+  return roleRoot;
+};
+
 const LoginPage = () => {
-  const { login } = useAuth();
+  const { login, isAuthenticated, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // If the user's persistent session was already restored (e.g., reopened browser on /login),
+  // redirect them straight to their role dashboard or intended deep link.
+  if (isAuthenticated && user) {
+    const target = getRedirectTargetForUser(user, location.state?.from);
+    return <Navigate to={target} replace />;
+  }
 
   const handleChange = (e) => setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
 
@@ -43,9 +52,9 @@ const LoginPage = () => {
     setError('');
     setIsSubmitting(true);
     try {
-      const user = await login(form);
-      const from = location.state?.from;
-      navigate(from || ROLE_HOME[user.role] || ROUTES.HOME, { replace: true });
+      const loggedInUser = await login(form);
+      const target = getRedirectTargetForUser(loggedInUser, location.state?.from);
+      navigate(target, { replace: true });
     } catch (err) {
       setError(getApiErrorMessage(err, 'Invalid email or password. Please try again.'));
     } finally {

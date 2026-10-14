@@ -23,13 +23,20 @@ const {
   getHospitalNow,
 } = require('../../utils/datetime.util');
 
+const getUserHospitalId = (user) =>
+  user?.hospital?._id ||
+  user?.hospital ||
+  user?.assignedHospital?._id ||
+  user?.assignedHospital ||
+  null;
+
 /**
  * Get today's appointments for the receptionist's hospital
  * Frontend calls: GET /api/reception/appointments/today
  * Used to populate the receptionist dashboard
  */
 const getTodaysAppointments = asyncHandler(async (req, res) => {
-  const hospitalId = req.user.hospital || req.user.assignedHospital;
+  const hospitalId = getUserHospitalId(req.user);
   const { status, search } = req.query;
 
   if (!hospitalId) {
@@ -42,7 +49,7 @@ const getTodaysAppointments = asyncHandler(async (req, res) => {
   });
 
   res.status(200).json(
-    new ApiResponse(200, { appointments }, 'Today\'s appointments retrieved successfully.')
+    new ApiResponse(200, { appointments }, "Today's appointments retrieved successfully.")
   );
 });
 
@@ -60,8 +67,9 @@ const searchByBookingNumber = asyncHandler(async (req, res) => {
   const appointment = await receptionService.searchByBookingNumber(bookingNumber);
 
   // SECURITY: Verify appointment belongs to receptionist's hospital
-  const hospitalId = req.user.hospital || req.user.assignedHospital;
-  if (appointment.hospital.toString() !== hospitalId.toString()) {
+  const hospitalId = getUserHospitalId(req.user);
+  const appointmentHospitalId = appointment.hospital?._id || appointment.hospital;
+  if (!hospitalId || appointmentHospitalId.toString() !== hospitalId.toString()) {
     throw new ApiError(403, 'You do not have access to this appointment.');
   }
 
@@ -160,12 +168,8 @@ const markPatientArrived = asyncHandler(async (req, res) => {
  */
 const markPatientPending = asyncHandler(async (req, res) => {
   const { id: appointmentId } = req.params;
-  const receptionistId = req.user._id;
 
   console.log('[RECEPTION] Marking patient pending:', appointmentId);
-
-  const receptionService = require('./reception.service');
-  const { broadcastQueueRecalculation } = require('../../sockets/socketEmitter');
 
   const { appointment, queue } = await receptionService.markPending(appointmentId);
 
@@ -270,7 +274,6 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
     });
 
   if (!queue) {
-    // No queue for this doctor/date yet
     return res.status(200).json(
       new ApiResponse(
         200,
@@ -284,7 +287,6 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
     );
   }
 
-  // Format entries for reception panel
   const formattedEntries = queue.entries.map((entry) => ({
     entryId: entry._id,
     tokenNumber: entry.tokenNumber,
@@ -302,7 +304,7 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
       entry.arrivalStatus === 'not-arrived' &&
       getHospitalNow() >= entry.attendanceWindowClosesAt,
     timeRemainingForArrival: AttendanceTimeoutService.getTimeRemainingForArrival(entry),
-    isInDoctorQueue: true, // Would need to check appointment.isInDoctorQueue
+    isInDoctorQueue: true,
   }));
 
   res.status(200).json(
@@ -327,7 +329,7 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
  * Useful for reception to focus on who to check in
  */
 const getWaitingForArrival = asyncHandler(async (req, res) => {
-  const { doctorId, hospitalId } = req.query;
+  const { doctorId } = req.query;
 
   if (!doctorId) {
     throw new ApiError(400, 'doctorId is required');
@@ -420,7 +422,6 @@ const getOverduePatients = asyncHandler(async (req, res) => {
 
 /**
  * Manually trigger attendance timeout check for testing/manual override
- * (In production, this would be called by a cron job)
  */
 const checkAttendanceTimeouts = asyncHandler(async (req, res) => {
   const { doctorId, date } = req.body;

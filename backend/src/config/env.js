@@ -30,9 +30,12 @@ if (isProduction) {
   }
 
   // Additional production-only validation
-  if (process.env.ACCESS_TOKEN_SECRET === 'dev_access_secret_change_me' ||
-      process.env.REFRESH_TOKEN_SECRET === 'dev_refresh_secret_change_me') {
-    const errorMsg = 'CRITICAL: Development JWT secrets detected in production environment. Application startup blocked.';
+  if (
+    process.env.ACCESS_TOKEN_SECRET === 'dev_access_secret_change_me' ||
+    process.env.REFRESH_TOKEN_SECRET === 'dev_refresh_secret_change_me'
+  ) {
+    const errorMsg =
+      'CRITICAL: Development JWT secrets detected in production environment. Application startup blocked.';
     console.error(errorMsg);
     process.exit(1);
   }
@@ -41,29 +44,88 @@ if (isProduction) {
 // Validate JWT secrets are different (best practice to keep tokens separate)
 if (process.env.ACCESS_TOKEN_SECRET && process.env.REFRESH_TOKEN_SECRET) {
   if (process.env.ACCESS_TOKEN_SECRET === process.env.REFRESH_TOKEN_SECRET) {
-    console.warn('⚠️  WARNING: ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET are identical. Best practice is to use different secrets.');
+    console.warn(
+      '⚠️  WARNING: ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET are identical. Best practice is to use different secrets.'
+    );
   }
 }
+
+/**
+ * Parses a human-readable duration string (e.g. "15m", "7d", "30d", "24h", "3600s")
+ * into milliseconds. Falls back to fallbackMs if parsing fails.
+ */
+const parseDurationToMs = (value, fallbackMs) => {
+  if (!value) return fallbackMs;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+
+  const match = String(value)
+    .trim()
+    .match(/^(\d+)\s*(ms|s|m|h|d)?$/i);
+  if (!match) return fallbackMs;
+
+  const amount = Number(match[1]);
+  const unit = (match[2] || 'ms').toLowerCase();
+
+  const multipliers = {
+    ms: 1,
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return amount * (multipliers[unit] || 1);
+};
+
+const normalizeOrigin = (url) => (url ? String(url).trim().replace(/\/+$/, '') : '');
+
+const rawClientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+const clientUrls = rawClientUrl
+  .split(',')
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
+const refreshExpiry = process.env.REFRESH_TOKEN_EXPIRY || '7d';
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 module.exports = {
   env: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT) || 5000,
-  mongoUri: process.env.MONGO_URI || (isProduction ? undefined : 'mongodb://localhost:27017/smart-hospital-queue'),
-  clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
+  mongoUri:
+    process.env.MONGO_URI ||
+    (isProduction ? undefined : 'mongodb://localhost:27017/smart-hospital-queue'),
+  clientUrl: clientUrls[0] || 'http://localhost:5173',
+  clientUrls,
+  normalizeOrigin,
+  parseDurationToMs,
 
   jwt: {
     // In production, these MUST come from env vars (no fallbacks to hardcoded values)
     accessSecret: isProduction
       ? process.env.ACCESS_TOKEN_SECRET
-      : (process.env.ACCESS_TOKEN_SECRET || 'dev_access_secret_change_me'),
+      : process.env.ACCESS_TOKEN_SECRET || 'dev_access_secret_change_me',
     accessExpiry: process.env.ACCESS_TOKEN_EXPIRY || '15m',
     refreshSecret: isProduction
       ? process.env.REFRESH_TOKEN_SECRET
-      : (process.env.REFRESH_TOKEN_SECRET || 'dev_refresh_secret_change_me'),
-    refreshExpiry: process.env.REFRESH_TOKEN_EXPIRY || '7d',
-    refreshExpiryMs: 7 * 24 * 60 * 60 * 1000,
+      : process.env.REFRESH_TOKEN_SECRET || 'dev_refresh_secret_change_me',
+    refreshExpiry,
+    refreshExpiryMs: parseDurationToMs(refreshExpiry, SEVEN_DAYS_MS),
     // JWT algorithm to use (always HS256 with our current setup; could extend to RS256)
     algorithm: 'HS256',
+  },
+
+  cookie: {
+    domain: process.env.COOKIE_DOMAIN || undefined,
+    path: process.env.COOKIE_PATH || '/api/v1/auth',
+    sameSite: process.env.COOKIE_SAME_SITE
+      ? process.env.COOKIE_SAME_SITE.toLowerCase()
+      : isProduction
+        ? 'none'
+        : 'lax',
+    secure:
+      process.env.COOKIE_SECURE !== undefined
+        ? process.env.COOKIE_SECURE === 'true'
+        : isProduction,
   },
 
   bcryptSaltRounds: Number(process.env.BCRYPT_SALT_ROUNDS) || 12,
@@ -88,7 +150,11 @@ module.exports = {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,
     apiKey: process.env.CLOUDINARY_API_KEY,
     apiSecret: process.env.CLOUDINARY_API_SECRET,
-    enabled: !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET),
+    enabled: !!(
+      process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+    ),
   },
 
   upload: {

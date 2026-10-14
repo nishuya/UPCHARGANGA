@@ -1,5 +1,6 @@
 const User = require('./auth.model');
 const ApiError = require('../../errors/ApiError');
+const config = require('../../config/env');
 const {
   generateAccessToken,
   generateRefreshToken,
@@ -13,9 +14,9 @@ const PUBLIC_FIELDS =
 
 /**
  * Issues a fresh access+refresh token pair for a user, persists the HASH
- * of the new refresh token (rotation), and returns both raw tokens to the
- * caller (controller decides how to transport them: JSON body for access
- * token, httpOnly cookie for refresh token).
+ * of the new refresh token (rotation) and its server-side expiration timestamp,
+ * and returns both raw tokens to the caller (controller decides how to
+ * transport them: JSON body for access token, httpOnly cookie for refresh token).
  *
  * Exported so Google auth service can also use it.
  */
@@ -24,6 +25,7 @@ const issueTokens = async (user) => {
   const refreshToken = generateRefreshToken(user);
 
   user.refreshToken = hashToken(refreshToken);
+  user.refreshTokenExpiresAt = new Date(Date.now() + config.jwt.refreshExpiryMs);
   await user.save({ validateBeforeSave: false });
 
   return { accessToken, refreshToken };
@@ -53,8 +55,8 @@ const registerUser = async (payload) => {
       select: 'user specialization',
       populate: {
         path: 'user',
-        select: 'fullName'
-      }
+        select: 'fullName',
+      },
     });
 
   return { user: safeUser, ...tokens };
@@ -103,8 +105,8 @@ const loginUser = async ({ email, password }) => {
       select: 'user specialization',
       populate: {
         path: 'user',
-        select: 'fullName'
-      }
+        select: 'fullName',
+      },
     });
 
   return { user: safeUser, ...tokens };
@@ -113,15 +115,16 @@ const loginUser = async ({ email, password }) => {
 /**
  * Refresh token rotation flow:
  * 1. Verify the JWT signature/expiry of the incoming refresh token.
- * 2. Compare its HASH against the hash stored on the user document.
- * 3. If they don't match, the stored token was already rotated (or the
- *    presented token is forged/stolen) — revoke the session entirely by
- *    clearing the stored hash, forcing a fresh login.
- * 4. If they match, issue a brand-new access+refresh pair and store the
+ * 2. Load the user and verify the account is active, password hasn't changed,
+ *    and the server-side refresh session hasn't expired or been revoked.
+ * 3. Compare the incoming token's SHA-256 hash against the stored hash.
+ * 4. If they don't match, the stored token was already rotated or revoked —
+ *    clear the stored hash and force a fresh login.
+ * 5. If they match, issue a brand-new access+refresh pair and store the
  *    new hash (old refresh token becomes unusable immediately — rotation).
  */
 const refreshAccessToken = async (incomingRefreshToken) => {
-  if (!incomingRefreshToken) {
+  if (!incomingRefreshToken || typeof incomingRefreshToken !== 'string') {
     throw new ApiError(401, 'Refresh token missing. Please log in again.');
   }
 
@@ -132,15 +135,39 @@ const refreshAccessToken = async (incomingRefreshToken) => {
     throw new ApiError(401, 'Invalid or expired refresh token. Please log in again.');
   }
 
-  const user = await User.findById(decoded.id).select('+refreshToken');
+  const user = await User.findById(decoded.id).select(
+    '+refreshToken +refreshTokenExpiresAt +passwordChangedAt'
+  );
 
   if (!user || !user.refreshToken) {
+    throw new ApiError(401, 'Session expired. Please log in again.');
+  }
+
+  if (!user.isActive) {
+    user.refreshToken = undefined;
+    user.refreshTokenExpiresAt = undefined;
+    await user.save({ validateBeforeSave: false });
+    throw new ApiError(403, 'This account has been deactivated.');
+  }
+
+  if (user.isPasswordChangedAfter && user.isPasswordChangedAfter(decoded.iat)) {
+    user.refreshToken = undefined;
+    user.refreshTokenExpiresAt = undefined;
+    await user.save({ validateBeforeSave: false });
+    throw new ApiError(401, 'Password was recently changed. Please log in again.');
+  }
+
+  if (user.refreshTokenExpiresAt && user.refreshTokenExpiresAt < new Date()) {
+    user.refreshToken = undefined;
+    user.refreshTokenExpiresAt = undefined;
+    await user.save({ validateBeforeSave: false });
     throw new ApiError(401, 'Session expired. Please log in again.');
   }
 
   if (user.refreshToken !== hashToken(incomingRefreshToken)) {
     // Possible token reuse/theft — revoke the whole session as a precaution.
     user.refreshToken = undefined;
+    user.refreshTokenExpiresAt = undefined;
     await user.save({ validateBeforeSave: false });
     throw new ApiError(401, 'Session invalid. Please log in again.');
   }
@@ -154,16 +181,44 @@ const refreshAccessToken = async (incomingRefreshToken) => {
       select: 'user specialization',
       populate: {
         path: 'user',
-        select: 'fullName'
-      }
+        select: 'fullName',
+      },
     });
 
   return { user: safeUser, ...tokens };
 };
 
-/** Clears the stored refresh token hash — invalidates the session server-side. */
-const logoutUser = async (userId) => {
-  await User.findByIdAndUpdate(userId, { $unset: { refreshToken: 1 } });
+/**
+ * Clears the stored refresh token hash — invalidates the session server-side.
+ * Supports being called with:
+ * - a userId directly: `logoutUser(userId)` (backward-compatible)
+ * - an options object: `logoutUser({ userId, refreshToken })`
+ *
+ * Works even when the access token has expired (by revoking via the refreshToken hash)
+ * and is completely idempotent when called repeatedly.
+ */
+const logoutUser = async (input) => {
+  if (!input) return;
+
+  const isOptionsObject =
+    typeof input === 'object' &&
+    input !== null &&
+    !input._bsontype &&
+    ('userId' in input || 'refreshToken' in input);
+
+  const userId = isOptionsObject ? input.userId : input;
+  const rawRefreshToken = isOptionsObject ? input.refreshToken : undefined;
+
+  const unsetFields = { $unset: { refreshToken: 1, refreshTokenExpiresAt: 1 } };
+
+  if (rawRefreshToken && typeof rawRefreshToken === 'string') {
+    const incomingHash = hashToken(rawRefreshToken);
+    await User.findOneAndUpdate({ refreshToken: incomingHash }, unsetFields);
+  }
+
+  if (userId) {
+    await User.findByIdAndUpdate(userId, unsetFields);
+  }
 };
 
 /**
@@ -172,18 +227,15 @@ const logoutUser = async (userId) => {
  * Never allows changes to: email, password, role, or other sensitive fields
  */
 const updatePatientProfile = async (userId, updateData) => {
-  // Whitelist of allowed fields that patients can update
   const allowedFields = ['phone', 'gender', 'dateOfBirth'];
 
-  // Extract only allowed fields from the update data
   const sanitizedUpdate = {};
-  allowedFields.forEach(field => {
+  allowedFields.forEach((field) => {
     if (field in updateData) {
       sanitizedUpdate[field] = updateData[field];
     }
   });
 
-  // Never allow these to be updated
   if (updateData.email || updateData.password || updateData.role || updateData.googleProviderId) {
     throw new ApiError(400, 'Email, password, and role cannot be updated.');
   }
@@ -192,19 +244,19 @@ const updatePatientProfile = async (userId, updateData) => {
     throw new ApiError(400, 'No valid fields to update.');
   }
 
-  const user = await User.findByIdAndUpdate(
-    userId,
-    sanitizedUpdate,
-    { new: true, runValidators: true }
-  ).select(PUBLIC_FIELDS)
+  const user = await User.findByIdAndUpdate(userId, sanitizedUpdate, {
+    new: true,
+    runValidators: true,
+  })
+    .select(PUBLIC_FIELDS)
     .populate('hospital', 'name')
     .populate({
       path: 'assignedDoctor',
       select: 'user specialization',
       populate: {
         path: 'user',
-        select: 'fullName'
-      }
+        select: 'fullName',
+      },
     });
 
   if (!user) {

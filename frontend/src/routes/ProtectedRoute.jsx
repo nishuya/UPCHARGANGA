@@ -1,30 +1,33 @@
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ROUTES } from '../constants/routePaths';
 import FullScreenLoader from '../components/common/FullScreenLoader';
 
 /**
- * Gate for every authenticated route tree. Usage:
- *   <Route element={<ProtectedRoute allowedRoles={[USER_ROLES.ADMIN]} />}>
- *     <Route element={<AdminLayout />}>...</Route>
- *   </Route>
+ * Gate for every authenticated route tree.
  *
  * Three states, checked in order:
  *  1. Still bootstrapping (AuthContext hasn't finished its silent
  *     refresh attempt yet) -> show a loader, render nothing else.
- *  2. Not authenticated -> redirect to /login.
- *  3. Authenticated but wrong role -> redirect to /unauthorized (NOT the
- *     login page — the person IS logged in, just not allowed here).
+ *  2. Not authenticated -> redirect to /login (preserving intended URL in state.from).
+ *  3. Authenticated but wrong role -> redirect to /unauthorized.
  */
 const ProtectedRoute = ({ allowedRoles }) => {
   const { user, isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return <FullScreenLoader />;
   }
 
-  if (!isAuthenticated) {
-    return <Navigate to={ROUTES.LOGIN} replace />;
+  if (!isAuthenticated || !user) {
+    return (
+      <Navigate
+        to={ROUTES.LOGIN}
+        state={{ from: `${location.pathname}${location.search}` }}
+        replace
+      />
+    );
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {

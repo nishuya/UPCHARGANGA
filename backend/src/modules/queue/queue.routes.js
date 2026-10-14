@@ -29,35 +29,14 @@ const authorizeQueueAccess = require('../../middlewares/authorizeQueueAccess.mid
 // PUBLIC ENDPOINTS (authenticated, any role)
 // =====================================================================
 
-/**
- * GET /api/queue/:doctorId/:date
- * Retrieve current queue for a doctor on a specific date
- * Accessible to: Reception (own hospital), Doctor (assigned doctors), Patient (filtered to own)
- *
- * SECURITY: Added authorizeQueueAccess to enforce hospital and doctor assignment boundaries
- */
 router.get('/:doctorId/:date', protect, authorizeQueueAccess, getQueue);
 
-/**
- * GET /api/queue/:queueId/stats
- * Get queue statistics (waiting count, avg time, etc.)
- * Accessible to: Reception, Doctor, Admin
- *
- * SECURITY: Added authorizeQueueAccess to enforce hospital boundaries
- */
 router.get('/:queueId/stats', protect, authorizeQueueAccess, getQueueStats);
 
 // =====================================================================
 // RECEPTION ENDPOINTS
 // =====================================================================
 
-/**
- * POST /api/queue/:queueId/mark-arrived/:entryId
- * Reception marks a patient as arrived
- * Accessible to: Reception (own hospital only)
- *
- * SECURITY: Added authorizeQueueAccess to prevent cross-hospital operations
- */
 router.post(
   '/:queueId/mark-arrived/:entryId',
   protect,
@@ -66,13 +45,6 @@ router.post(
   markPatientArrived
 );
 
-/**
- * POST /api/queue/:queueId/skip/:entryId
- * Reception marks a patient as skipped/no-show
- * Accessible to: Reception (own hospital only)
- *
- * SECURITY: Added authorizeQueueAccess to prevent cross-hospital operations
- */
 router.post(
   '/:queueId/skip/:entryId',
   protect,
@@ -82,50 +54,29 @@ router.post(
 );
 
 // =====================================================================
-// DOCTOR ASSISTANT ENDPOINTS
+// DOCTOR ASSISTANT & DOCTOR ENDPOINTS
 // =====================================================================
 
-/**
- * POST /api/queue/:queueId/call-next
- * Doctor assistant calls the next patient
- * Accessible to: Doctor Assistant (assigned doctors only)
- *
- * SECURITY: Added authorizeQueueAccess to prevent operating on unassigned queues
- */
 router.post(
   '/:queueId/call-next',
   protect,
-  authorize('doctor', 'doctor-assistant'),
+  authorize('doctor', 'doctor-assistant', 'doctorAssistant'),
   authorizeQueueAccess,
   callNextPatient
 );
 
-/**
- * POST /api/queue/:queueId/start/:entryId
- * Doctor marks consultation as started
- * Accessible to: Doctor, Doctor Assistant (assigned doctors only)
- *
- * SECURITY: Added authorizeQueueAccess to prevent operating on unassigned queues
- */
 router.post(
   '/:queueId/start/:entryId',
   protect,
-  authorize('doctor', 'doctor-assistant'),
+  authorize('doctor', 'doctor-assistant', 'doctorAssistant'),
   authorizeQueueAccess,
   startConsultation
 );
 
-/**
- * POST /api/queue/:queueId/complete/:entryId
- * Doctor marks consultation as completed
- * Accessible to: Doctor, Doctor Assistant (assigned doctors only)
- *
- * SECURITY: Added authorizeQueueAccess to prevent operating on unassigned queues
- */
 router.post(
   '/:queueId/complete/:entryId',
   protect,
-  authorize('doctor', 'doctor-assistant'),
+  authorize('doctor', 'doctor-assistant', 'doctorAssistant'),
   authorizeQueueAccess,
   completeConsultation
 );
@@ -134,11 +85,6 @@ router.post(
 // ADMIN ENDPOINTS
 // =====================================================================
 
-/**
- * POST /api/queue/:queueId/pause
- * Admin pauses the queue
- * Accessible to: Admin
- */
 router.post(
   '/:queueId/pause',
   protect,
@@ -146,11 +92,6 @@ router.post(
   pauseQueue
 );
 
-/**
- * POST /api/queue/:queueId/resume
- * Admin resumes the queue
- * Accessible to: Admin
- */
 router.post(
   '/:queueId/resume',
   protect,
