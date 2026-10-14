@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, Link } from 'react-router-dom';
 import { useAuth } from '../../../../context/AuthContext';
+import { useLogout } from '../../../../hooks/useLogout';
 import { ROUTES } from '../../../../constants/routePaths';
 import UpcharGangaLogo from '../../../../assets/logo/UpcharGangaLogo';
 import NotificationBell from '../NotificationBell';
@@ -23,7 +24,8 @@ const NAV_ITEMS = [
 ];
 
 const PatientTopNav = () => {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
+  const handleLogout = useLogout();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const navLinkClasses = ({ isActive }) =>
@@ -61,7 +63,7 @@ const PatientTopNav = () => {
             <span className="text-sm text-neutral-600">{user?.fullName}</span>
             <button
               type="button"
-              onClick={logout}
+              onClick={handleLogout}
               className="rounded-md border border-neutral-200 px-md py-2 text-sm font-medium text-neutral-600 transition-all duration-fast hover:border-upchar-500 hover:bg-upchar-50 hover:text-upchar-600"
             >
               Log out

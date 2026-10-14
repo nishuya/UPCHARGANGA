@@ -24,10 +24,28 @@ app.use(helmet());
 
 // Only our known frontend origin may make credentialed requests — required
 // for the httpOnly refresh-token cookie to be sent/received cross-origin.
+// In production, CLIENT_URL must match the actual frontend domain.
+// In development, it's typically http://localhost:5173 (Vite dev server).
 app.use(
   cors({
-    origin: config.clientUrl,
+    origin: (origin, callback) => {
+      const allowed = config.clientUrl;
+      // Allow requests from the configured CLIENT_URL
+      if (!origin || origin === allowed) {
+        callback(null, true);
+      } else {
+        // In development, also allow localhost variations for local testing
+        if (config.env === 'development' && (origin === 'http://localhost:5173' || origin === 'http://localhost:3000')) {
+          callback(null, true);
+        } else {
+          callback(new Error('CORS not allowed'));
+        }
+      }
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400, // 24 hours
   })
 );
 

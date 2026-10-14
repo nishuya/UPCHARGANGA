@@ -39,30 +39,52 @@ export const AuthProvider = ({ children }) => {
 
   const logout = useCallback(async () => {
     try {
+      // Call the backend logout endpoint to revoke the refresh token session
+      // and clear the server-side refresh token hash
       await logoutRequest();
+    } catch (error) {
+      // Even if the logout request fails (network error, server error),
+      // we still clear the local state. A user clicking "log out" expects
+      // to be logged out of THIS tab immediately, regardless of the server
+      // round-trip outcome.
+      console.error('Logout request failed (clearing local state anyway):', error.message);
     } finally {
-      // Always clear local state, even if the network call fails (e.g.
-      // offline) — a user clicking "log out" expects to be logged out of
-      // THIS tab regardless of whether the server round trip succeeded.
+      // Always clear local state, even if the network call fails (e.g. offline).
+      // The browser's cookie clearing happens on the server response, but if
+      // the request never reaches the server, we clear locally to ensure the
+      // UI is not stuck showing authenticated content.
       clearSession();
     }
   }, [clearSession]);
 
-  // On first load, there is no access token in memory (by design — see
-  // tokenStore.js). This silently attempts a refresh using the httpOnly
-  // refresh-token cookie, so a page reload doesn't force a fresh login as
-  // long as a valid session cookie still exists.
+  // On first load and on page refresh, there is no access token in memory
+  // (by design — see tokenStore.js). This silently attempts a refresh using
+  // the httpOnly refresh-token cookie, so a page reload doesn't force a fresh
+  // login as long as a valid session cookie still exists.
+  //
+  // This effect runs ONCE on mount (via empty dependency array) and must
+  // complete before ProtectedRoute allows any navigation decisions.
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
         const { data } = await refreshTokenRequest();
-        if (!cancelled) handleAuthenticated(data.data);
-      } catch {
-        if (!cancelled) clearSession();
+        if (!cancelled) {
+          handleAuthenticated(data.data);
+        }
+      } catch (error) {
+        // The refresh endpoint returned an error (401, etc.) or the request failed.
+        // Either way, there's no valid session, so clear the local state.
+        if (!cancelled) {
+          console.log('Session restore failed (user not authenticated):', error.response?.status || error.message);
+          clearSession();
+        }
       } finally {
-        if (!cancelled) setIsLoading(false);
+        // Bootstrap complete — ProtectedRoute can now make route decisions.
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     })();
 
@@ -73,9 +95,10 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   // apiClient dispatches this when a token refresh fails mid-session
-  // (e.g. the refresh token itself expired or was reused) — see
-  // services/apiClient.js. A DOM event, not a direct import, is what lets
-  // that file trigger a logout without importing React/context at all.
+  // (e.g. the refresh token itself expired, was reused, or the session
+  // was revoked on the server) — see services/apiClient.js. A DOM event,
+  // not a direct import, is what lets that file trigger a logout without
+  // importing React/context at all.
   useEffect(() => {
     const handleForcedLogout = () => clearSession();
     window.addEventListener('auth:logout', handleForcedLogout);

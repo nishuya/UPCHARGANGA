@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../../../context/AuthContext';
+import { useLogout } from '../../../hooks/useLogout';
 import Card from '../components/ui/PCard';
 import Button from '../components/ui/PButton';
 import Field from '../components/ui/PField';
@@ -30,7 +31,8 @@ const formatDateForInput = (value) => {
  * - Logout action
  */
 const ProfilePage = () => {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
+  const handleLogout = useLogout();
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -209,7 +211,7 @@ const ProfilePage = () => {
             </Button>
             <Button
               variant="danger"
-              onClick={logout}
+              onClick={handleLogout}
               className="flex-1 sm:flex-none"
             >
               Log out

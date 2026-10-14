@@ -55,7 +55,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const { config, response } = error;
-    const isAuthEndpoint = ['/auth/login', '/auth/register', '/auth/refresh-token'].some((path) =>
+    const isAuthEndpoint = ['/auth/login', '/auth/register', '/auth/refresh-token', '/auth/logout'].some((path) =>
       config?.url?.includes(path)
     );
 

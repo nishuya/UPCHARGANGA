@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useLogout } from '../../hooks/useLogout';
 import UpcharGangaLogo from '../../assets/logo/UpcharGangaLogo';
 
 /**
@@ -38,7 +39,8 @@ const ROLE_ACCENTS = {
 };
 
 const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
+  const handleLogout = useLogout();
   const accentColors = ROLE_ACCENTS[accent] || ROLE_ACCENTS.admin;
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
@@ -149,7 +151,7 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
         </div>
         <button
           type="button"
-          onClick={logout}
+          onClick={handleLogout}
           className="w-full rounded-md border border-neutral-200 px-md py-2.5 text-sm font-medium text-neutral-600 transition-all duration-fast hover:border-danger-300 hover:bg-danger-50 hover:text-danger-600"
         >
           Log out
