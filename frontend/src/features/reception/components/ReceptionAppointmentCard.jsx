@@ -12,9 +12,10 @@ import {
   useUpdateAppointmentStatus,
 } from '../hooks/useReceptionActions';
 import { getApiErrorMessage } from '../../../utils/apiError';
-import { formatQueueTimeRange, getTimingStatusMeta } from '../../../utils/queueTime';
 
 const TERMINAL_STATUSES = ['completed', 'cancelled', 'no-show'];
+
+const formatTime = (slot) => (slot ? `${slot.start}–${slot.end}` : '—');
 
 const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
   const [openPanel, setOpenPanel] = useState(null);
@@ -40,35 +41,10 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
   const isTerminal = TERMINAL_STATUSES.includes(appointment.status);
   const canMarkArrived = ['pending', 'confirmed'].includes(appointment.status);
-  const canMarkPending =
-    ['confirmed', 'checked-in'].includes(appointment.status) &&
-    appointment.queueEntryStatus !== 'pending';
+  const canMarkPending = ['pending', 'confirmed'].includes(appointment.status);
   const canMoveToQueue =
     appointment.status === 'checked-in' && appointment.payment && !appointment.isInDoctorQueue;
   const canManage = !isTerminal;
-
-  const timingMeta = getTimingStatusMeta({
-    timingStatus:
-      appointment.status === 'cancelled'
-        ? appointment.cancellationReason === 'DOCTOR_UNAVAILABLE'
-          ? 'doctor-unavailable'
-          : 'cancelled'
-        : appointment.status === 'completed'
-          ? 'completed'
-          : appointment.timingStatus || 'on-time',
-    delayMinutes: appointment.delayMinutes,
-    aheadMinutes: appointment.aheadMinutes,
-    statusLabel: appointment.statusLabel,
-    statusMessage: appointment.statusMessage,
-    recommendedAction: appointment.recommendedAction,
-  });
-
-  const estimatedDisplay = appointment.estimatedConsultationStartTime
-    ? formatQueueTimeRange(
-        appointment.estimatedConsultationStartTime,
-        appointment.estimatedConsultationEndTime
-      )
-    : formatQueueTimeRange(appointment.timeSlot?.start, appointment.timeSlot?.end);
 
   const handleVerify = async () => {
     await verifyMutation.mutateAsync({ id: appointment._id, verificationNotes: notes });
@@ -92,26 +68,12 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
   return (
     <Card className="hover:shadow-lg hover:border-upchar-300 transition-all duration-base">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4 sm:mb-lg">
-        {/* Left: Token, Queue Position, Patient, Doctor */}
+        {/* Left: Token, Patient, Doctor */}
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex items-center gap-sm px-2.5 py-1 rounded-lg bg-gold-50 border border-gold-200">
-                <span className="text-label font-black text-gold-700">
-                  Token #{appointment.tokenNumber}
-                </span>
-              </div>
-              {appointment.queuePosition != null && appointment.queuePosition > 0 && (
-                <div className="inline-flex items-center px-2.5 py-1 rounded-lg bg-neutral-100 border border-neutral-200">
-                  <span className="text-xs font-bold text-neutral-700">
-                    Queue Position #{appointment.queuePosition}
-                  </span>
-                </div>
-              )}
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${timingMeta.badgeClass}`}
-              >
-                {timingMeta.badgeText}
+          <div className="flex items-center justify-between gap-2 mb-2.5">
+            <div className="inline-flex items-center gap-sm px-2.5 py-1 rounded-lg bg-gold-50 border border-gold-200">
+              <span className="text-label font-black text-gold-700">
+                Token #{appointment.tokenNumber}
               </span>
             </div>
             <div className="sm:hidden">
@@ -124,7 +86,9 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
           </h3>
 
           {appointment.patient?.phone && (
-            <p className="mt-1 text-body-sm text-neutral-600">📞 {appointment.patient.phone}</p>
+            <p className="mt-1 text-body-sm text-neutral-600">
+              📞 {appointment.patient.phone}
+            </p>
           )}
 
           <div className="mt-2.5 space-y-1">
@@ -167,7 +131,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
           {appointment.isInDoctorQueue && (
             <span className="inline-flex items-center gap-xs px-2.5 py-1 rounded-full bg-teal-50 border border-teal-200">
-              <span className="text-caption font-semibold text-teal-700">In doctor queue</span>
+              <span className="text-caption font-semibold text-teal-700">In queue</span>
             </span>
           )}
         </div>
@@ -175,22 +139,10 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
       <div className="border-t border-neutral-200 my-3 sm:my-lg" />
 
-      <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-4 gap-3 mb-4 sm:mb-lg text-sm">
+      <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 gap-3 mb-4 sm:mb-lg text-sm">
         <div>
-          <p className="text-caption font-medium text-neutral-500">Booked Slot</p>
-          <p className="mt-0.5 font-semibold text-neutral-900">
-            {formatQueueTimeRange(appointment.timeSlot?.start, appointment.timeSlot?.end)}
-          </p>
-        </div>
-        <div>
-          <p className="text-caption font-medium text-neutral-500">Estimated Consultation</p>
-          <p className="mt-0.5 font-bold text-upchar-600">{estimatedDisplay}</p>
-        </div>
-        <div>
-          <p className="text-caption font-medium text-neutral-500">Consultation Duration</p>
-          <p className="mt-0.5 font-semibold text-neutral-900">
-            {appointment.consultationDurationMinutes || 15} min
-          </p>
+          <p className="text-caption font-medium text-neutral-500">Time Slot</p>
+          <p className="mt-0.5 font-semibold text-neutral-900">{formatTime(appointment.timeSlot)}</p>
         </div>
         {hospitalName && (
           <div>
@@ -230,7 +182,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               onClick={() => arriveMutation.mutate({ id: appointment._id })}
               className="w-full sm:w-auto"
             >
-              {appointment.status === 'pending' ? 'Rejoin & Mark Arrived' : 'Mark Arrived'}
+              Mark Arrived
             </Button>
           )}
           {canMarkPending && (

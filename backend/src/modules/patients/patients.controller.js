@@ -14,15 +14,6 @@ const bookAppointment = asyncHandler(async (req, res) => {
         bookingNumber: result.bookingNumber,
         queueNumber: result.queueNumber,
         estimatedReportingTime: result.estimatedReportingTime,
-        estimatedConsultationStartTime: result.estimatedConsultationStartTime,
-        estimatedConsultationEndTime: result.estimatedConsultationEndTime,
-        recommendedArrivalTime: result.recommendedArrivalTime,
-        timingStatus: result.timingStatus,
-        delayMinutes: result.delayMinutes,
-        aheadMinutes: result.aheadMinutes,
-        statusLabel: result.statusLabel,
-        statusMessage: result.statusMessage,
-        recommendedAction: result.recommendedAction,
         queueStatus: result.queueStatus,
       },
       'Appointment booked successfully.'
@@ -42,8 +33,14 @@ const getMyAppointments = asyncHandler(async (req, res) => {
     );
 });
 
+/**
+ * GET /api/patients/appointments/:id
+ *
+ * SECURITY: req.appointment is already validated by requirePatientResourceAccess middleware
+ * which ensures the appointment belongs to the requesting patient.
+ */
 const getMyAppointmentById = asyncHandler(async (req, res) => {
-  const appointment = req.appointment;
+  const appointment = req.appointment; // Populated by requirePatientResourceAccess middleware
 
   if (!appointment) {
     throw new ApiError(404, 'Appointment not found.');
@@ -52,8 +49,14 @@ const getMyAppointmentById = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, { appointment }, 'Appointment fetched successfully.'));
 });
 
+/**
+ * GET /api/patients/appointments/:id/queue-entry
+ *
+ * SECURITY: req.appointment is already validated by requirePatientResourceAccess middleware
+ * which ensures the appointment belongs to the requesting patient.
+ */
 const getAppointmentQueueEntry = asyncHandler(async (req, res) => {
-  const appointment = req.appointment;
+  const appointment = req.appointment; // Populated by requirePatientResourceAccess middleware
 
   if (!appointment) {
     throw new ApiError(404, 'Appointment not found.');
@@ -65,9 +68,16 @@ const getAppointmentQueueEntry = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, { queueEntry }, 'Queue entry fetched successfully.'));
 });
 
+/**
+ * PATCH /api/patients/appointments/:id/cancel
+ *
+ * SECURITY:
+ * - Patient ID is ALWAYS taken from req.user._id (never from request body)
+ * - Appointment ID is validated by requirePatientResourceAccess middleware
+ */
 const cancelAppointment = asyncHandler(async (req, res) => {
   const appointment = await patientService.cancelMyAppointment(
-    req.user._id,
+    req.user._id,  // ✅ CRITICAL: From authenticated token, never from request
     req.params.id,
     req.body.cancellationReason
   );
@@ -81,3 +91,4 @@ module.exports = {
   cancelAppointment,
   getAppointmentQueueEntry,
 };
+

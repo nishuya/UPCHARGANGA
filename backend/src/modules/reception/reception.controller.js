@@ -1,13 +1,27 @@
+/**
+ * RECEPTION CONTROLLER - QUEUE MANAGEMENT
+ * ========================================
+ * Handles reception panel operations:
+ * - Mark patient as arrived
+ * - Move patient to doctor queue
+ * - View queue status
+ * - Update patient status
+ */
+
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 const ApiError = require('../../errors/ApiError');
 const Queue = require('../queue/queue.model');
+const Appointment = require('../appointments/appointments.model');
 const AttendanceTimeoutService = require('../queue/attendance.timeout.service');
 const QueueScheduler = require('../queue/queue.scheduler.service');
 const receptionService = require('./reception.service');
 const withTransaction = require('../../utils/withTransaction.util');
 const { broadcastQueueRecalculation } = require('../../sockets/socketEmitter');
-const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
+const {
+  normalizeDateOnly,
+  getHospitalNow,
+} = require('../../utils/datetime.util');
 
 const getUserHospitalId = (user) =>
   user?.hospital?._id ||
@@ -16,6 +30,11 @@ const getUserHospitalId = (user) =>
   user?.assignedHospital ||
   null;
 
+/**
+ * Get today's appointments for the receptionist's hospital
+ * Frontend calls: GET /api/reception/appointments/today
+ * Used to populate the receptionist dashboard
+ */
 const getTodaysAppointments = asyncHandler(async (req, res) => {
   const hospitalId = getUserHospitalId(req.user);
   const { status, search } = req.query;
@@ -34,6 +53,10 @@ const getTodaysAppointments = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Search for booking by booking number
+ * Frontend calls: GET /api/reception/appointments/search?bookingNumber=ABC123
+ */
 const searchByBookingNumber = asyncHandler(async (req, res) => {
   const { bookingNumber } = req.query;
 
@@ -43,15 +66,22 @@ const searchByBookingNumber = asyncHandler(async (req, res) => {
 
   const appointment = await receptionService.searchByBookingNumber(bookingNumber);
 
+  // SECURITY: Verify appointment belongs to receptionist's hospital
   const hospitalId = getUserHospitalId(req.user);
   const appointmentHospitalId = appointment.hospital?._id || appointment.hospital;
   if (!hospitalId || appointmentHospitalId.toString() !== hospitalId.toString()) {
     throw new ApiError(403, 'You do not have access to this appointment.');
   }
 
-  res.status(200).json(new ApiResponse(200, { appointment }, 'Appointment found.'));
+  res.status(200).json(
+    new ApiResponse(200, { appointment }, 'Appointment found.')
+  );
 });
 
+/**
+ * Verify Patient
+ * Called when reception confirms patient's identity
+ */
 const verifyPatient = asyncHandler(async (req, res) => {
   const { verificationNotes } = req.body;
   const receptionistId = req.user._id;
@@ -75,6 +105,10 @@ const verifyPatient = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Collect Payment
+ * Called when reception collects payment from patient
+ */
 const collectPayment = asyncHandler(async (req, res) => {
   const { method, amount } = req.body;
   const receptionistId = req.user._id;
@@ -100,8 +134,19 @@ const collectPayment = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Mark Patient as Arrived (Check-in)
+ * Called when patient arrives at reception
+ */
 const markPatientArrived = asyncHandler(async (req, res) => {
   const appointmentId = req.params.id;
+  const receptionistId = req.user._id;
+
+  console.log('[RECEPTION] Marking patient arrived:', {
+    appointment: appointmentId,
+    receptionist: receptionistId,
+  });
+
   const appointment = await receptionService.markArrived(appointmentId);
 
   res.status(200).json(
@@ -111,18 +156,24 @@ const markPatientArrived = asyncHandler(async (req, res) => {
         appointmentId: appointment._id,
         status: appointment.status,
         arrivedAt: appointment.arrivedAt,
-        appointment,
       },
       'Patient marked as arrived successfully.'
     )
   );
 });
 
+/**
+ * Mark a patient as pending (not arrived)
+ * Called when reception identifies patient has not arrived
+ */
 const markPatientPending = asyncHandler(async (req, res) => {
   const { id: appointmentId } = req.params;
 
+  console.log('[RECEPTION] Marking patient pending:', appointmentId);
+
   const { appointment, queue } = await receptionService.markPending(appointmentId);
 
+  // Broadcast queue update with recalculated delays
   broadcastQueueRecalculation({
     doctorId: queue.doctor,
     date: queue.date,
@@ -135,8 +186,6 @@ const markPatientPending = asyncHandler(async (req, res) => {
       {
         appointmentId: appointment._id,
         tokenNumber: appointment.tokenNumber,
-        appointment,
-        queue,
         message: 'Patient marked as pending',
       },
       'Patient marked as pending successfully.'
@@ -144,6 +193,10 @@ const markPatientPending = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Update appointment status (Cancel or Mark No-show)
+ * Called when reception needs to change appointment status
+ */
 const updateAppointmentStatus = asyncHandler(async (req, res) => {
   const { status, reason } = req.body;
   const receptionistId = req.user._id;
@@ -152,10 +205,11 @@ const updateAppointmentStatus = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Status must be "cancelled" or "no-show".');
   }
 
-  const appointment = await receptionService.updateStatus(req.params.id, receptionistId, {
-    status,
-    reason,
-  });
+  const appointment = await receptionService.updateStatus(
+    req.params.id,
+    receptionistId,
+    { status, reason }
+  );
 
   res.status(200).json(
     new ApiResponse(
@@ -164,15 +218,21 @@ const updateAppointmentStatus = asyncHandler(async (req, res) => {
         appointmentId: appointment._id,
         status: appointment.status,
         reason: reason || null,
-        appointment,
       },
       `Appointment marked as ${status} successfully.`
     )
   );
 });
 
+/**
+ * Move Patient to Doctor Queue
+ * Called when reception releases patient to doctor queue
+ */
 const movePatientToDoctorQueue = asyncHandler(async (req, res) => {
   const appointmentId = req.params.id;
+
+  console.log('[RECEPTION] Moving patient to doctor queue:', appointmentId);
+
   const appointment = await receptionService.moveToDoctorQueue(appointmentId);
 
   res.status(200).json(
@@ -181,24 +241,24 @@ const movePatientToDoctorQueue = asyncHandler(async (req, res) => {
       {
         appointmentId: appointment._id,
         isInDoctorQueue: appointment.isInDoctorQueue,
-        appointment,
       },
       'Patient moved to doctor queue successfully.'
     )
   );
 });
 
+/**
+ * Get queue for a specific doctor and date
+ * Shows reception the current queue status
+ */
 const getQueueForDoctor = asyncHandler(async (req, res) => {
-  const doctorId = req.params.doctorId || req.query.doctorId;
-  const date = req.query.date || getHospitalNow();
+  const { doctorId, date } = req.query;
 
-  if (!doctorId) {
-    throw new ApiError(400, 'doctorId is required');
+  if (!doctorId || !date) {
+    throw new ApiError(400, 'doctorId and date are required');
   }
 
   const normalizedDate = normalizeDateOnly(new Date(date));
-
-  await QueueScheduler.recalculateQueue(doctorId, normalizedDate);
 
   const queue = await Queue.findOne({
     doctor: doctorId,
@@ -210,7 +270,7 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
     })
     .populate({
       path: 'entries.appointment',
-      select: 'tokenNumber bookingNumber timeSlot status isInDoctorQueue',
+      select: 'tokenNumber timeSlot status',
     });
 
   if (!queue) {
@@ -227,39 +287,24 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
     );
   }
 
-  const now = getHospitalNow();
   const formattedEntries = queue.entries.map((entry) => ({
     entryId: entry._id,
-    appointmentId: entry.appointment?._id || entry.appointment,
     tokenNumber: entry.tokenNumber,
-    bookingNumber: entry.appointment?.bookingNumber,
     queuePosition: entry.queuePosition,
     patientName: entry.patient?.fullName,
     patientPhone: entry.patient?.phone,
     status: entry.status,
-    appointmentStatus: entry.appointment?.status,
     arrivalStatus: entry.arrivalStatus,
     scheduledStartTime: entry.scheduledStartTime,
-    scheduledEndTime: entry.scheduledEndTime,
     estimatedStartTime: entry.estimatedStartTime,
     estimatedEndTime: entry.estimatedEndTime,
-    estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
-    estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
-    recommendedArrivalTime: entry.recommendedArrivalTime,
     estimatedWaitingMinutes: entry.estimatedWaitingMinutes,
-    timingStatus: entry.timingStatus,
-    delayMinutes: entry.delayMinutes,
-    aheadMinutes: entry.aheadMinutes,
-    statusLabel: entry.statusLabel,
-    statusMessage: entry.statusMessage,
-    recommendedAction: entry.recommendedAction,
     attendanceWindowClosesAt: entry.attendanceWindowClosesAt,
     isOverdueForArrival:
       entry.arrivalStatus === 'not-arrived' &&
-      Boolean(entry.attendanceWindowClosesAt) &&
-      now >= entry.attendanceWindowClosesAt,
+      getHospitalNow() >= entry.attendanceWindowClosesAt,
     timeRemainingForArrival: AttendanceTimeoutService.getTimeRemainingForArrival(entry),
-    isInDoctorQueue: Boolean(entry.appointment?.isInDoctorQueue),
+    isInDoctorQueue: true,
   }));
 
   res.status(200).json(
@@ -272,8 +317,6 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
         totalTokensIssued: queue.totalTokensIssued,
         currentTokenNumber: queue.currentTokenNumber,
         averageConsultationMinutes: queue.averageConsultationMinutes,
-        queueVersion: queue.queueVersion,
-        timingSummary: queue.timingSummary,
         entries: formattedEntries,
       },
       'Queue retrieved successfully.'
@@ -281,6 +324,10 @@ const getQueueForDoctor = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Get patients waiting for arrival (not yet arrived)
+ * Useful for reception to focus on who to check in
+ */
 const getWaitingForArrival = asyncHandler(async (req, res) => {
   const { doctorId } = req.query;
 
@@ -305,7 +352,7 @@ const getWaitingForArrival = asyncHandler(async (req, res) => {
   }
 
   const waiting = queue.entries
-    .filter((e) => e.arrivalStatus === 'not-arrived' && e.status === 'waiting')
+    .filter((e) => e.arrivalStatus === 'not-arrived')
     .sort((a, b) => a.tokenNumber - b.tokenNumber)
     .map((entry) => ({
       entryId: entry._id,
@@ -313,11 +360,7 @@ const getWaitingForArrival = asyncHandler(async (req, res) => {
       patientName: entry.patient?.fullName,
       patientPhone: entry.patient?.phone,
       scheduledTime: entry.scheduledStartTime,
-      estimatedStartTime: entry.estimatedStartTime,
-      timingStatus: entry.timingStatus,
-      overdue:
-        Boolean(entry.attendanceWindowClosesAt) &&
-        getHospitalNow() >= entry.attendanceWindowClosesAt,
+      overdue: getHospitalNow() >= entry.attendanceWindowClosesAt,
       timeRemaining: AttendanceTimeoutService.getTimeRemainingForArrival(entry),
     }));
 
@@ -326,6 +369,10 @@ const getWaitingForArrival = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Get overdue patients (past their 5-minute attendance window)
+ * Useful for reception to follow up
+ */
 const getOverduePatients = asyncHandler(async (req, res) => {
   const { doctorId } = req.query;
 
@@ -345,13 +392,14 @@ const getOverduePatients = asyncHandler(async (req, res) => {
   });
 
   if (!queue) {
-    return res.status(200).json(new ApiResponse(200, { overdue: [] }, 'No overdue patients.'));
+    return res.status(200).json(
+      new ApiResponse(200, { overdue: [] }, 'No overdue patients.')
+    );
   }
 
   const overdue = queue.entries
     .filter(
       (e) =>
-        e.status === 'waiting' &&
         e.arrivalStatus === 'not-arrived' &&
         e.attendanceWindowClosesAt &&
         now >= e.attendanceWindowClosesAt
@@ -372,6 +420,9 @@ const getOverduePatients = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Manually trigger attendance timeout check for testing/manual override
+ */
 const checkAttendanceTimeouts = asyncHandler(async (req, res) => {
   const { doctorId, date } = req.body;
 
@@ -382,11 +433,21 @@ const checkAttendanceTimeouts = asyncHandler(async (req, res) => {
   const normalizedDate = normalizeDateOnly(new Date(date));
 
   const result = await withTransaction(async (session) => {
-    return AttendanceTimeoutService.checkAndApplyTimeouts(doctorId, normalizedDate, session);
+    const timeoutsApplied = await AttendanceTimeoutService.checkAndApplyTimeouts(
+      doctorId,
+      normalizedDate,
+      session
+    );
+
+    return timeoutsApplied;
   });
 
   res.status(200).json(
-    new ApiResponse(200, { timeoutsApplied: result }, `Applied ${result} attendance timeouts.`)
+    new ApiResponse(
+      200,
+      { timeoutsApplied: result },
+      `Applied ${result} attendance timeouts.`
+    )
   );
 });
 

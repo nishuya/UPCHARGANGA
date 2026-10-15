@@ -1,25 +1,5 @@
 const { WEEKDAYS } = require('../constants/enums');
 
-/**
- * Deterministic clock override for automated testing.
- * In production, mockNow is null and getHospitalNow() uses Date.now().
- */
-let mockNow = null;
-
-const setMockNow = (dateInput) => {
-  if (dateInput === null || dateInput === undefined) {
-    mockNow = null;
-    return;
-  }
-  mockNow = dateInput instanceof Date ? new Date(dateInput.getTime()) : new Date(dateInput);
-};
-
-const resetMockNow = () => {
-  mockNow = null;
-};
-
-const isMockNowActive = () => mockNow !== null;
-
 /** Strips the time component, returning a Date at UTC midnight. Lets us
  * compare/store "appointment day" as a simple equality check. */
 const normalizeDateOnly = (date) => {
@@ -37,13 +17,12 @@ const getWeekdayName = (date) => {
 };
 
 const timeToMinutes = (timeStr) => {
-  if (!timeStr || typeof timeStr !== 'string') return 0;
   const [h, m] = timeStr.split(':').map(Number);
-  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
+  return h * 60 + m;
 };
 
 const minutesToTime = (totalMinutes) => {
-  const wrapped = ((Math.round(totalMinutes) % 1440) + 1440) % 1440; // wrap safely within a day
+  const wrapped = ((totalMinutes % 1440) + 1440) % 1440; // wrap safely within a day
   const h = Math.floor(wrapped / 60);
   const m = wrapped % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -54,52 +33,36 @@ const addMinutesToTime = (timeStr, minutesToAdd) =>
 
 const isTimeAfter = (a, b) => timeToMinutes(a) > timeToMinutes(b);
 
-/** Combines a date-only Date with an "HH:mm" string into one full Date.
- * Uses UTC getters/setters consistently across the codebase. */
+/** Combines a date-only Date with an "HH:mm" string into one full Date. */
 const combineDateAndTime = (date, timeStr) => {
   const d = normalizeDateOnly(date);
-  const [h, m] = String(timeStr || '00:00').split(':').map(Number);
-  d.setUTCHours(Number.isFinite(h) ? h : 0, Number.isFinite(m) ? m : 0, 0, 0);
+  const [h, m] = timeStr.split(':').map(Number);
+  d.setUTCHours(h, m, 0, 0);
   return d;
 };
 
-/** Converts a Date (created via combineDateAndTime or getHospitalNow) into "HH:mm"
- * using UTC hours/minutes so it never drifts with the host OS timezone. */
-const datetimeToTimeString = (datetime) => {
-  if (!datetime) return null;
-  if (typeof datetime === 'string' && /^\d{2}:\d{2}$/.test(datetime)) return datetime;
-  const d = datetime instanceof Date ? datetime : new Date(datetime);
-  if (Number.isNaN(d.getTime())) return null;
-  const hours = String(d.getUTCHours()).padStart(2, '0');
-  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
-};
-
-/** Formats an "HH:mm" string or Date into "10:00 AM" / "02:15 PM" without double timezone shift. */
-const formatTime12h = (value) => {
-  const hm = typeof value === 'string' && /^\d{2}:\d{2}/.test(value)
-    ? value.slice(0, 5)
-    : datetimeToTimeString(value);
-  if (!hm) return '—';
-  const [h24, m] = hm.split(':').map(Number);
-  const period = h24 >= 12 ? 'PM' : 'AM';
-  const h12 = h24 % 12 || 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
-};
-
+/** All hospitals in this system are in India (IST, UTC+5:30 — India
+ * does not observe DST, so this is a fixed offset, not a rule-based
+ * timezone lookup). Doctor.availability windows ("09:00"–"17:00") are
+ * entered by hospital/admin staff meaning LOCAL wall-clock time, so
+ * "now" must be computed in that same timezone — not the server's raw
+ * UTC clock — or every same-day comparison against them is wrong by
+ * ~5.5 hours. (This was exactly the bug: a 1pm IST booking read as
+ * 07:30 UTC, which looked like it was BEFORE the clinic's 09:00
+ * opening, so the stale token-grid time never got corrected to "now".) */
 const IST_OFFSET_MINUTES = 5 * 60 + 30;
 
-/** The current moment in hospital wall-clock time (UTC getters represent IST).
- * When mockNow is active in automated tests, returns a clone of mockNow. */
-const getHospitalNow = () => {
-  if (mockNow !== null) {
-    return new Date(mockNow.getTime());
-  }
-  return new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000);
-};
+/** The current moment, shifted so reading its UTC getters (getUTCHours,
+ * getUTCMinutes, and normalizeDateOnly's setUTCHours reset) yields IST
+ * wall-clock values instead of true UTC ones. Use this instead of
+ * `new Date()` anywhere "now" needs to be compared against a
+ * Doctor.availability time string or against an appointment's calendar
+ * day. */
+const getHospitalNow = () => new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000);
 
 /** "HH:mm" for right now (in hospital-local/IST time), rounded UP to
- * the next 5-minute mark. */
+ * the next 5-minute mark so slot times look intentional ("13:10")
+ * rather than a random current second ("13:07"). */
 const getCurrentTimeString = () => {
   const now = getHospitalNow();
   const rawMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -118,12 +81,7 @@ module.exports = {
   addMinutesToTime,
   isTimeAfter,
   combineDateAndTime,
-  datetimeToTimeString,
-  formatTime12h,
   getCurrentTimeString,
   getHospitalNow,
   isSameUTCDate,
-  setMockNow,
-  resetMockNow,
-  isMockNowActive,
 };

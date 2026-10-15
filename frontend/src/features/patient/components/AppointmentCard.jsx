@@ -5,7 +5,6 @@ import Card from './ui/PCard';
 import Button from './ui/PButton';
 import { useCancelAppointment } from '../hooks/useAppointments';
 import { ROUTES } from '../../../constants/routePaths';
-import { formatQueueTimeRange, getTimingStatusMeta } from '../../../utils/queueTime';
 
 const formatDate = (value) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -14,6 +13,11 @@ const formatDate = (value) =>
     year: 'numeric',
   });
 
+const formatTime = (time) => {
+  if (!time) return '';
+  return time.substring(0, 5);
+};
+
 const CANCELLABLE_STATUSES = ['pending', 'confirmed', 'checked-in'];
 
 const AppointmentCard = ({ appointment, onCancelled }) => {
@@ -21,29 +25,6 @@ const AppointmentCard = ({ appointment, onCancelled }) => {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [cancelError, setCancelError] = useState(null);
   const canCancel = CANCELLABLE_STATUSES.includes(appointment.status);
-
-  const timingMeta = getTimingStatusMeta({
-    timingStatus:
-      appointment.status === 'cancelled'
-        ? appointment.cancellationReason === 'DOCTOR_UNAVAILABLE'
-          ? 'doctor-unavailable'
-          : 'cancelled'
-        : appointment.status === 'completed'
-          ? 'completed'
-          : appointment.timingStatus || 'on-time',
-    delayMinutes: appointment.delayMinutes,
-    aheadMinutes: appointment.aheadMinutes,
-    statusLabel: appointment.statusLabel,
-    statusMessage: appointment.statusMessage,
-    recommendedAction: appointment.recommendedAction,
-  });
-
-  const displayTimeRange = appointment.estimatedConsultationStartTime
-    ? formatQueueTimeRange(
-        appointment.estimatedConsultationStartTime,
-        appointment.estimatedConsultationEndTime
-      )
-    : formatQueueTimeRange(appointment.timeSlot?.start, appointment.timeSlot?.end);
 
   const handleCancel = useCallback(async () => {
     try {
@@ -83,35 +64,14 @@ const AppointmentCard = ({ appointment, onCancelled }) => {
               </span>
             </div>
 
-            {appointment.queuePosition != null && appointment.queuePosition > 0 && (
-              <div className="inline-flex items-center px-2.5 py-1 rounded-lg bg-neutral-100 border border-neutral-200">
-                <span className="text-xs font-semibold text-neutral-700">
-                  Queue Pos #{appointment.queuePosition}
-                </span>
-              </div>
-            )}
-
             <span className="text-caption text-neutral-600 font-medium">
               {formatDate(appointment.appointmentDate)}
             </span>
             <span className="text-caption text-neutral-400">·</span>
-            <span className="text-caption font-semibold text-upchar-700">
-              Est: {displayTimeRange}
+            <span className="text-caption text-neutral-600">
+              {formatTime(appointment.timeSlot?.start)}–{formatTime(appointment.timeSlot?.end)}
             </span>
           </div>
-
-          {!['completed', 'cancelled', 'no-show'].includes(appointment.status) && (
-            <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${timingMeta.badgeClass}`}
-              >
-                {timingMeta.badgeText}
-              </span>
-              {timingMeta.detail && (
-                <span className="text-xs text-neutral-600">{timingMeta.detail}</span>
-              )}
-            </div>
-          )}
 
           <p className="mt-2 text-caption text-neutral-500 break-all">
             Ref: {appointment.bookingNumber}
@@ -119,7 +79,7 @@ const AppointmentCard = ({ appointment, onCancelled }) => {
         </div>
 
         {/* Right: Status badge on sm+ */}
-        <div className="hidden sm:flex sm:flex-col sm:items-end gap-2 shrink-0">
+        <div className="hidden sm:flex sm:flex-col sm:items-end shrink-0">
           <Badge status={appointment.status} />
         </div>
       </div>
