@@ -1,26 +1,9 @@
 import { Link, useLocation, useParams } from 'react-router-dom';
 import Button from '../components/ui/PButton';
-import Card from '../components/ui/PCard';
 import { Spinner, ErrorNotice } from '../components/ui/PStateNotice';
 import { useAppointment } from '../hooks/useAppointments';
 import { ROUTES } from '../../../constants/routePaths';
 import UpcharGangaLogo from '../../../assets/logo/UpcharGangaLogo';
-
-/**
- * Premium UpcharGanga Appointment Receipt
- *
- * Digital receipt for successful appointment booking.
- * Inspired by modern UPI/payment receipts with original healthcare design.
- *
- * Features:
- * - Success confirmation header
- * - Large token number (visual centerpiece)
- * - Structured appointment information
- * - Queue position and wait time
- * - Professional receipt layout
- * - Responsive mobile design
- * - Download/Print/Share actions
- */
 
 const formatDate = (value) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -79,101 +62,98 @@ const BookingSuccessPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-upchar-50 to-neutral-0 py-2xl print:bg-white">
+    <div className="py-2 sm:py-6 print:bg-white">
       {/* Print-only header */}
-      <div className="hidden print:block mb-xl text-center">
+      <div className="hidden print:block mb-6 text-center">
         <h1 className="text-2xl font-bold text-neutral-900">UpcharGanga</h1>
         <p className="text-sm text-neutral-600">Smart Hospital Queue Management</p>
       </div>
 
       {/* Main Receipt Container */}
-      <div className="mx-auto max-w-2xl px-lg">
-        {/* Receipt Card */}
-        <div className="rounded-2xl border-2 border-upchar-200 bg-white shadow-xl print:shadow-none print:border-neutral-300">
+      <div className="mx-auto max-w-2xl">
+        <div className="rounded-2xl border-2 border-upchar-200 bg-white shadow-xl overflow-hidden print:shadow-none print:border-neutral-300">
           {/* Header Section */}
-          <div className="border-b-2 border-upchar-100 px-lg sm:px-xl py-2xl sm:py-2xl text-center bg-gradient-to-b from-upchar-50 to-white">
-            {/* Logo and Branding */}
-            <div className="flex items-center justify-center gap-md mb-xl print:mb-lg">
-              <div className="w-12 h-12">
+          <div className="border-b-2 border-upchar-100 px-4 sm:px-xl py-6 sm:py-2xl text-center bg-gradient-to-b from-upchar-50 to-white">
+            <div className="flex items-center justify-center gap-2.5 sm:gap-md mb-4 sm:mb-xl print:mb-lg">
+              <div className="w-10 h-10 sm:w-12 sm:h-12 shrink-0">
                 <UpcharGangaLogo variant="mark" />
               </div>
               <div className="text-left">
-                <h1 className="text-h2 font-black text-upchar-700">UpcharGanga</h1>
+                <h1 className="text-lg sm:text-h2 font-black text-upchar-700">UpcharGanga</h1>
                 <p className="text-caption text-upchar-600">Hospital Queue Management</p>
               </div>
             </div>
 
-            {/* Success Indicator */}
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-success-100 text-4xl text-success-600 mb-lg print:w-14 print:h-14 print:text-3xl">
+            <div className="inline-flex items-center justify-center w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-success-100 text-3xl sm:text-4xl text-success-600 mb-3 sm:mb-lg">
               ✓
             </div>
 
-            {/* Success Message */}
-            <h2 className="text-h2 font-bold text-neutral-900">
+            <h2 className="text-xl sm:text-h2 font-bold text-neutral-900">
               Appointment Confirmed
             </h2>
-            <p className="mt-sm text-body text-neutral-600">
+            <p className="mt-1 text-body text-neutral-600">
               Your appointment has been successfully booked
             </p>
           </div>
 
           {/* Token Display - Visual Centerpiece */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-3xl text-center border-b-2 border-upchar-100 bg-white">
-            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-md">
+          <div className="px-4 sm:px-xl py-6 sm:py-3xl text-center border-b-2 border-upchar-100 bg-white">
+            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-3">
               Your Token Number
             </p>
-            <div className="inline-block rounded-2xl border-3 border-upchar-200 bg-gradient-to-br from-upchar-50 to-neutral-0 px-2xl sm:px-3xl py-xl sm:py-2xl">
-              <p className="font-display text-6xl sm:text-7xl font-black text-upchar-600">
+            <div className="inline-block rounded-2xl border-2 border-upchar-200 bg-gradient-to-br from-upchar-50 to-neutral-0 px-6 sm:px-3xl py-4 sm:py-2xl">
+              <p className="font-display text-4xl xs:text-5xl sm:text-7xl font-black text-upchar-600">
                 #{queueNumber}
               </p>
             </div>
-            <p className="mt-lg text-body-sm text-neutral-600">
-              Keep this number safe. You'll use it to track your appointment.
+            <p className="mt-4 text-body-sm text-neutral-600">
+              Keep this number safe. You&apos;ll use it to track your appointment.
             </p>
           </div>
 
           {/* Doctor & Hospital Section */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl border-b-2 border-upchar-100">
-            <div className="space-y-lg">
-              {/* Doctor */}
+          <div className="px-4 sm:px-xl py-5 sm:py-xl border-b-2 border-upchar-100">
+            <div className="space-y-4 sm:space-y-lg">
               <div>
-                <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-sm">
+                <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-1">
                   Doctor
                 </p>
-                <p className="text-h3 font-bold text-neutral-900">
+                <p className="text-lg sm:text-h3 font-bold text-neutral-900 break-words">
                   Dr. {appointment?.doctor?.user?.fullName}
                 </p>
-                <p className="mt-sm text-body-sm text-neutral-600">
+                <p className="mt-0.5 text-body-sm text-neutral-600">
                   {appointment?.doctor?.specialization}
                 </p>
               </div>
 
-              {/* Hospital */}
               <div>
-                <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-sm">
+                <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-1">
                   Hospital
                 </p>
-                <p className="text-body font-semibold text-neutral-900">
+                <p className="text-body font-semibold text-neutral-900 break-words">
                   {appointment?.hospital?.name}
                 </p>
                 {appointment?.hospital?.address?.line1 && (
-                  <p className="mt-sm text-body-sm text-neutral-600">
+                  <p className="mt-1 text-body-sm text-neutral-600 break-words">
                     {appointment.hospital.address.line1}
-                    {appointment.hospital.address.line2 ? `, ${appointment.hospital.address.line2}` : ''}
-                    {appointment.hospital.address.pincode ? ` – ${appointment.hospital.address.pincode}` : ''}
+                    {appointment.hospital.address.line2
+                      ? `, ${appointment.hospital.address.line2}`
+                      : ''}
+                    {appointment.hospital.address.pincode
+                      ? ` – ${appointment.hospital.address.pincode}`
+                      : ''}
                   </p>
                 )}
                 {appointment?.hospital?.contact?.phone && (
-                  <p className="mt-sm text-body-sm text-neutral-600">
+                  <p className="mt-1 text-body-sm text-neutral-600">
                     📞 {appointment.hospital.contact.phone}
                   </p>
                 )}
               </div>
 
-              {/* Department */}
               {appointment?.department?.name && (
                 <div>
-                  <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-sm">
+                  <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-1">
                     Department
                   </p>
                   <p className="text-body font-semibold text-neutral-900">
@@ -185,20 +165,20 @@ const BookingSuccessPage = () => {
           </div>
 
           {/* Patient Information Section */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl border-b-2 border-upchar-100">
-            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-lg">
+          <div className="px-4 sm:px-xl py-5 sm:py-xl border-b-2 border-upchar-100">
+            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-3 sm:mb-lg">
               Patient Information
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-lg">
               <div>
                 <p className="text-caption font-medium text-neutral-500">Patient Name</p>
-                <p className="mt-sm text-body-sm font-semibold text-neutral-900">
+                <p className="mt-1 text-body-sm font-semibold text-neutral-900 break-words">
                   {appointment?.patient?.fullName || appointment?.bookedByPatient?.fullName}
                 </p>
               </div>
               <div>
                 <p className="text-caption font-medium text-neutral-500">Booking Reference</p>
-                <p className="mt-sm text-body-sm font-semibold text-neutral-900 font-mono">
+                <p className="mt-1 text-body-sm font-semibold text-neutral-900 font-mono break-all">
                   {bookingNumber}
                 </p>
               </div>
@@ -206,28 +186,29 @@ const BookingSuccessPage = () => {
           </div>
 
           {/* Appointment Details Section */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl border-b-2 border-upchar-100">
-            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-lg">
+          <div className="px-4 sm:px-xl py-5 sm:py-xl border-b-2 border-upchar-100">
+            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-3 sm:mb-lg">
               Appointment Details
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-lg">
+            <div className="grid grid-cols-1 xs:grid-cols-2 gap-4 sm:gap-lg">
               <div>
                 <p className="text-caption font-medium text-neutral-500">Date</p>
-                <p className="mt-sm text-body font-semibold text-neutral-900">
+                <p className="mt-1 text-body font-semibold text-neutral-900">
                   {formatDate(appointment?.appointmentDate)}
                 </p>
               </div>
               <div>
                 <p className="text-caption font-medium text-neutral-500">Time Slot</p>
-                <p className="mt-sm text-body font-semibold text-neutral-900">
-                  {formatTime(appointment?.timeSlot?.start)} – {formatTime(appointment?.timeSlot?.end)}
+                <p className="mt-1 text-body font-semibold text-neutral-900">
+                  {formatTime(appointment?.timeSlot?.start)} –{' '}
+                  {formatTime(appointment?.timeSlot?.end)}
                 </p>
               </div>
 
               {queueStatus?.estimatedReportingTime && (
                 <div>
                   <p className="text-caption font-medium text-neutral-500">Report By</p>
-                  <p className="mt-sm text-body font-semibold text-neutral-900">
+                  <p className="mt-1 text-body font-semibold text-neutral-900">
                     {formatTime(queueStatus.estimatedReportingTime)}
                   </p>
                 </div>
@@ -235,8 +216,10 @@ const BookingSuccessPage = () => {
 
               {queueStatus?.estimatedWaitingMinutes != null && (
                 <div>
-                  <p className="text-caption font-medium text-neutral-500">Estimated Waiting Time</p>
-                  <p className="mt-sm text-body font-semibold text-neutral-900">
+                  <p className="text-caption font-medium text-neutral-500">
+                    Estimated Waiting Time
+                  </p>
+                  <p className="mt-1 text-body font-semibold text-neutral-900">
                     ~{queueStatus.estimatedWaitingMinutes} minutes
                   </p>
                 </div>
@@ -245,46 +228,50 @@ const BookingSuccessPage = () => {
           </div>
 
           {/* Queue Information Section */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl border-b-2 border-upchar-100">
-            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-lg">
-              Queue Information
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-lg">
-              {queueStatus?.currentServingToken != null && (
-                <div>
-                  <p className="text-caption font-medium text-neutral-500">Currently Serving</p>
-                  <p className="mt-sm text-body font-semibold text-neutral-900">
-                    #{queueStatus.currentServingToken}
-                  </p>
-                </div>
-              )}
+          {(queueStatus?.currentServingToken != null || queueStatus?.queuePosition != null) && (
+            <div className="px-4 sm:px-xl py-5 sm:py-xl border-b-2 border-upchar-100">
+              <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-3 sm:mb-lg">
+                Queue Information
+              </p>
+              <div className="grid grid-cols-1 xs:grid-cols-2 gap-4 sm:gap-lg">
+                {queueStatus?.currentServingToken != null && (
+                  <div>
+                    <p className="text-caption font-medium text-neutral-500">Currently Serving</p>
+                    <p className="mt-1 text-body font-semibold text-neutral-900">
+                      #{queueStatus.currentServingToken}
+                    </p>
+                  </div>
+                )}
 
-              {queueStatus?.queuePosition != null && (
-                <div>
-                  <p className="text-caption font-medium text-neutral-500">Your Position</p>
-                  <p className="mt-sm text-body font-semibold text-neutral-900">
-                    {queueStatus.queuePosition}
-                    {queueStatus.queuePosition === 1
-                      ? ' (You\'re next!)'
-                      : ` (${Math.max(queueStatus.queuePosition - 1, 0)} ahead)`}
-                  </p>
-                </div>
-              )}
+                {queueStatus?.queuePosition != null && (
+                  <div>
+                    <p className="text-caption font-medium text-neutral-500">Your Position</p>
+                    <p className="mt-1 text-body font-semibold text-neutral-900">
+                      {queueStatus.queuePosition}
+                      {queueStatus.queuePosition === 1
+                        ? " (You're next!)"
+                        : ` (${Math.max(queueStatus.queuePosition - 1, 0)} ahead)`}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Booking Metadata Section */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl border-b-2 border-upchar-100 bg-neutral-50">
-            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-lg">
+          <div className="px-4 sm:px-xl py-5 sm:py-xl border-b-2 border-upchar-100 bg-neutral-50">
+            <p className="text-label font-semibold uppercase tracking-widest text-neutral-500 mb-3 sm:mb-lg">
               Booking Information
             </p>
-            <div className="space-y-md text-body-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-600">Appointment ID</span>
-                <span className="font-mono font-semibold text-neutral-900">{appointment?._id}</span>
+            <div className="space-y-3 text-body-sm">
+              <div className="flex flex-col xs:flex-row xs:justify-between xs:items-center gap-1">
+                <span className="text-neutral-600 shrink-0">Appointment ID</span>
+                <span className="font-mono font-semibold text-neutral-900 break-all">
+                  {appointment?._id}
+                </span>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-600">Booked On</span>
+              <div className="flex flex-col xs:flex-row xs:justify-between xs:items-center gap-1">
+                <span className="text-neutral-600 shrink-0">Booked On</span>
                 <span className="font-semibold text-neutral-900">
                   {appointment?.createdAt ? formatDateTime(appointment.createdAt) : '—'}
                 </span>
@@ -293,18 +280,16 @@ const BookingSuccessPage = () => {
           </div>
 
           {/* Footer Notice */}
-          <div className="px-lg sm:px-xl py-2xl sm:py-xl text-center text-caption text-neutral-600 bg-gradient-to-t from-neutral-50 to-white">
+          <div className="px-4 sm:px-xl py-5 sm:py-xl text-center text-caption text-neutral-600 bg-gradient-to-t from-neutral-50 to-white">
             <p>
               Please arrive at the hospital at least 15 minutes before your appointment time.
             </p>
-            <p className="mt-md">
-              You can track your appointment live on your dashboard.
-            </p>
+            <p className="mt-2">You can track your appointment live on your dashboard.</p>
           </div>
         </div>
 
         {/* Action Buttons - Not in Print */}
-        <div className="print:hidden mt-2xl flex flex-col sm:flex-row gap-md justify-center">
+        <div className="print:hidden mt-6 sm:mt-2xl flex flex-col sm:flex-row flex-wrap gap-3 justify-center">
           <Button
             variant="secondary"
             size="lg"
@@ -314,7 +299,7 @@ const BookingSuccessPage = () => {
             🖨️ Print Receipt
           </Button>
 
-          {navigator.share && (
+          {typeof navigator !== 'undefined' && navigator.share && (
             <Button
               variant="secondary"
               size="lg"
@@ -325,13 +310,16 @@ const BookingSuccessPage = () => {
             </Button>
           )}
 
-          <Link to={`${ROUTES.PATIENT.APPOINTMENT_TRACK}/${appointment?._id}`} className="flex-1 sm:flex-none">
+          <Link
+            to={`${ROUTES.PATIENT.APPOINTMENT_TRACK}/${appointment?._id}`}
+            className="w-full sm:w-auto"
+          >
             <Button size="lg" className="w-full">
               Track Appointment
             </Button>
           </Link>
 
-          <Link to={ROUTES.PATIENT.ROOT} className="flex-1 sm:flex-none">
+          <Link to={ROUTES.PATIENT.ROOT} className="w-full sm:w-auto">
             <Button variant="ghost" size="lg" className="w-full">
               Back to Dashboard
             </Button>

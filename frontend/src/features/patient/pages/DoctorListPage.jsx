@@ -9,20 +9,7 @@ import BookingSteps from '../components/BookingSteps';
 import { ROUTES } from '../../../constants/routePaths';
 
 /**
- * Premium UpcharGanga Doctor Selection Page
- *
- * Step 3 of guided booking flow:
- * 1. City - select location
- * 2. Hospital - choose facility
- * 3. Doctor (THIS PAGE) - select specialist
- * 4. Confirm - book appointment
- *
- * Features:
- * - Filter by department
- * - Search by specialization
- * - Professional doctor cards
- * - Hospital context
- * - Back navigation
+ * Premium UpcharGanga Doctor Selection Page — Responsive
  */
 const DoctorListPage = () => {
   const navigate = useNavigate();
@@ -62,22 +49,20 @@ const DoctorListPage = () => {
   }
 
   return (
-    <div className="space-y-2xl">
-      {/* Progress Stepper */}
+    <div className="space-y-6 sm:space-y-2xl">
       <BookingSteps current={3} />
 
-      {/* Page Title */}
       <div>
-        <h1 className="text-display font-bold text-neutral-900">
+        <h1 className="text-2xl sm:text-display font-bold text-neutral-900 break-words">
           Doctors at {hospitalName || 'this hospital'}
         </h1>
-        <p className="mt-md text-body text-neutral-600">
+        <p className="mt-1.5 sm:mt-md text-body text-neutral-600">
           Choose a doctor to see their availability and book an appointment.
         </p>
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-lg max-w-2xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-lg max-w-2xl">
         <Field
           label="Department"
           as="select"
@@ -97,14 +82,11 @@ const DoctorListPage = () => {
           placeholder="e.g., Cardiology, Pediatrics"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          autoFocus
         />
       </div>
 
-      {/* Loading State */}
       {isLoading && <Spinner label="Loading doctors…" />}
 
-      {/* Error State */}
       {isError && (
         <ErrorNotice
           message="Couldn't load doctors right now. Please try again."
@@ -119,7 +101,6 @@ const DoctorListPage = () => {
         />
       )}
 
-      {/* Empty State */}
       {!isLoading && !isError && doctors?.length === 0 && (
         <EmptyState
           title="No doctors found"
@@ -138,20 +119,18 @@ const DoctorListPage = () => {
         />
       )}
 
-      {/* Doctors List */}
       {!isLoading && !isError && doctors?.length > 0 && (
-        <div className="space-y-lg">
+        <div className="space-y-4 sm:space-y-lg">
           {doctors.map((doctor) => (
             <DoctorCard key={doctor._id} doctor={doctor} onBook={handleBook} />
           ))}
         </div>
       )}
 
-      {/* Back Navigation */}
-      <div className="pt-lg border-t border-neutral-200">
+      <div className="pt-4 sm:pt-lg border-t border-neutral-200">
         <Link
           to={ROUTES.PATIENT.CHOOSE_CITY}
-          className="text-body-sm font-medium text-neutral-600 hover:text-upchar-600 transition-colors"
+          className="inline-flex items-center text-body-sm font-medium text-neutral-600 hover:text-upchar-600 transition-colors"
         >
           ← Start over
         </Link>

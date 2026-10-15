@@ -5,20 +5,17 @@ const RANGE_OPTIONS = [
   { label: '90 days', value: 90 },
 ];
 
-/** Small pill group for picking how many trailing days of history to
- * aggregate — shared by the Analytics and Reports pages so both filter
- * the same way. */
 const DateRangeSelect = ({ value, onChange }) => (
-  <div className="flex gap-1.5">
+  <div className="flex flex-wrap gap-1.5">
     {RANGE_OPTIONS.map((opt) => (
       <button
         key={opt.value}
         type="button"
         onClick={() => onChange(opt.value)}
-        className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
           value === opt.value
-            ? 'bg-role-admin text-white'
-            : 'bg-surface text-ink-muted hover:bg-surface-border'
+            ? 'bg-upchar-600 text-white shadow-sm'
+            : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'
         }`}
       >
         {opt.label}

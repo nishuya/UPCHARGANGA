@@ -4,22 +4,6 @@ import { useAuth } from '../../context/AuthContext';
 import { useLogout } from '../../hooks/useLogout';
 import UpcharGangaLogo from '../../assets/logo/UpcharGangaLogo';
 
-/**
- * Premium UpcharGanga Dashboard Shell
- *
- * Shared layout for all operational panels (Reception, Doctor Assistant, Admin).
- * Establishes dual branding:
- * - PRIMARY: UpcharGanga (platform brand)
- * - SECONDARY: Hospital name (organization identity)
- *
- * Features:
- * - Dual branding in header and sidebar
- * - Static sidebar on md+ screens
- * - Off-canvas drawer on mobile
- * - Role-specific accent colors (gold for reception, teal for doctor, blue for admin)
- * - Professional styling throughout
- */
-
 const ROLE_ACCENTS = {
   reception: {
     dot: 'bg-gold-500',
@@ -44,36 +28,49 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
   const accentColors = ROLE_ACCENTS[accent] || ROLE_ACCENTS.admin;
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-  // Get hospital name from user context
   const hospitalName = user?.hospital?.name || user?.assignedHospital?.name || 'Hospital';
-
-  // Determine if we're using sections (admin) or flat nav (reception, doctor)
   const hasNavSections = !!navSections && navSections.length > 0;
 
   const sidebarContent = (
     <>
       {/* Dual Branding Section */}
       <div className="border-b border-neutral-200 px-lg py-lg bg-gradient-to-b from-neutral-0 to-neutral-50">
-        {/* Platform Brand */}
-        <div className="flex items-center gap-md mb-md">
-          <div className="w-8 h-8 flex-shrink-0">
-            <UpcharGangaLogo variant="mark" />
+        <div className="flex items-center justify-between gap-md mb-md">
+          <div className="flex items-center gap-md min-w-0 flex-1">
+            <div className="w-8 h-8 flex-shrink-0">
+              <UpcharGangaLogo variant="mark" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-black text-upchar-700 truncate">UpcharGanga</div>
+              {hasNavSections ? (
+                <div className="text-xs font-medium text-neutral-600 truncate">
+                  Healthcare Queue Platform
+                </div>
+              ) : (
+                <div className="text-xs font-medium text-upchar-600">Platform</div>
+              )}
+            </div>
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-black text-upchar-700">UpcharGanga</div>
-            {hasNavSections && (
-              <div className="text-xs font-medium text-neutral-600">
-                Healthcare Queue & Appointment Platform
-              </div>
-            )}
-            {!hasNavSections && <div className="text-xs font-medium text-upchar-600">Platform</div>}
-          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsDrawerOpen(false)}
+            aria-label="Close menu"
+            className="rounded-md p-1.5 text-neutral-500 hover:bg-neutral-100 md:hidden"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
+              <path
+                d="M6 6l12 12M18 6L6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
         </div>
 
-        {/* Divider */}
         <div className="my-md h-px bg-neutral-200" />
 
-        {/* Organization Brand */}
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-neutral-500 mb-sm">
             Your Hospital
@@ -117,7 +114,7 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
           ))}
         </nav>
       ) : (
-        <nav className="flex-1 space-y-sm px-md py-lg">
+        <nav className="flex-1 space-y-sm px-md py-lg overflow-y-auto">
           {navItems.map(({ label, path, end }) => (
             <NavLink
               key={path}
@@ -140,14 +137,14 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
 
       {/* User & Actions */}
       <div className="border-t border-neutral-200 px-lg py-lg space-y-lg">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-widest text-neutral-500 mb-sm">
             Logged in as
           </p>
           <p className="text-sm font-semibold text-neutral-900 truncate" title={user?.fullName}>
             {user?.fullName ?? '—'}
           </p>
-          <p className="text-xs text-neutral-600 mt-sm">{user?.email}</p>
+          <p className="text-xs text-neutral-600 mt-sm truncate">{user?.email}</p>
         </div>
         <button
           type="button"
@@ -161,15 +158,15 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-neutral-50 md:flex-row">
+    <div className="flex min-h-screen md:h-screen flex-col bg-neutral-50 md:flex-row overflow-x-hidden">
       {/* Mobile Header */}
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-neutral-0 px-lg py-3 md:hidden shadow-base">
-        <div className="flex items-center gap-md min-w-0">
+      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-neutral-200 bg-neutral-0 px-4 py-3 md:hidden shadow-base">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-7 h-7 flex-shrink-0">
             <UpcharGangaLogo variant="mark" />
           </div>
           <div className="min-w-0">
-            <div className="text-xs font-black text-upchar-700">UpcharGanga</div>
+            <div className="text-xs font-black text-upchar-700 truncate">UpcharGanga</div>
             <div className="text-xs font-medium text-neutral-600 truncate">{hospitalName}</div>
           </div>
         </div>
@@ -193,7 +190,7 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
       {/* Mobile Drawer Backdrop */}
       {isDrawerOpen && (
         <div
-          className="fixed inset-0 z-30 bg-neutral-900/50 md:hidden"
+          className="fixed inset-0 z-40 bg-neutral-900/50 md:hidden"
           onClick={() => setIsDrawerOpen(false)}
           aria-hidden="true"
         />
@@ -201,16 +198,16 @@ const DashboardShell = ({ roleLabel, accent, navItems, navSections }) => {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-neutral-200 bg-neutral-0 transition-transform duration-200 ease-in-out md:static md:z-auto md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-neutral-200 bg-neutral-0 transition-transform duration-200 ease-in-out md:static md:z-auto md:w-64 md:max-w-none md:translate-x-0 ${
           isDrawerOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         {sidebarContent}
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-7xl px-lg py-2xl sm:px-xl sm:py-3xl lg:px-3xl">
+      {/* Main Content — min-w-0 prevents flex child from overflowing horizontally when tables/grids are inside */}
+      <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
+        <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
           <Outlet />
         </div>
       </main>

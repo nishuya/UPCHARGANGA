@@ -17,8 +17,8 @@ const PatientDetailModal = ({ isOpen, onClose, patientId }) => {
       {data && (
         <div className="space-y-5">
           <div>
-            <p className="text-lg font-semibold text-ink">{data.patient.fullName}</p>
-            <p className="text-sm text-ink-muted">{data.patient.email}</p>
+            <p className="text-lg font-semibold text-ink break-words">{data.patient.fullName}</p>
+            <p className="text-sm text-ink-muted break-all">{data.patient.email}</p>
             <p className="text-sm text-ink-muted">{data.patient.phone}</p>
             <p className="mt-1 text-xs text-ink-subtle">
               Joined {formatDate(data.patient.createdAt)}
@@ -26,7 +26,7 @@ const PatientDetailModal = ({ isOpen, onClose, patientId }) => {
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 xs:grid-cols-2 gap-3">
             <div className="rounded border border-surface-border bg-surface p-3">
               <p className="text-xl font-semibold text-ink">{data.stats.totalAppointments}</p>
               <p className="text-xs text-ink-muted">Total appointments</p>
@@ -44,16 +44,18 @@ const PatientDetailModal = ({ isOpen, onClose, patientId }) => {
             ) : (
               <ul className="divide-y divide-surface-border rounded border border-surface-border">
                 {data.recentAppointments.map((appt) => (
-                  <li key={appt._id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                    <div>
-                      <p className="text-sm font-medium text-ink">
+                  <li key={appt._id} className="flex flex-col xs:flex-row xs:items-center justify-between gap-2 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-ink break-words">
                         Dr. {appt.doctor?.user?.fullName} · {appt.hospital?.name}
                       </p>
                       <p className="text-xs text-ink-subtle">
                         {formatDate(appt.appointmentDate)} · {appt.bookingNumber}
                       </p>
                     </div>
-                    <Badge status={appt.status} />
+                    <div className="self-start xs:self-auto flex-shrink-0">
+                      <Badge status={appt.status} />
+                    </div>
                   </li>
                 ))}
               </ul>

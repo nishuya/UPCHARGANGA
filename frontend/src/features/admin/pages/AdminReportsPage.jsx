@@ -9,7 +9,7 @@ import { downloadCsv } from '../../../utils/csv';
 
 const ReportSection = ({ title, subtitle, filename, columns, rows }) => (
   <Card>
-    <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex flex-col xs:flex-row xs:items-start justify-between gap-3">
       <div>
         <h3 className="text-sm font-semibold text-ink">{title}</h3>
         {subtitle && <p className="mt-0.5 text-xs text-ink-subtle">{subtitle}</p>}
@@ -19,6 +19,7 @@ const ReportSection = ({ title, subtitle, filename, columns, rows }) => (
         variant="secondary"
         disabled={!rows.length}
         onClick={() => downloadCsv(filename, columns, rows)}
+        className="w-full xs:w-auto"
       >
         Export CSV
       </Button>
@@ -63,10 +64,10 @@ const AdminReportsPage = () => {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink">Reports</h1>
-          <p className="mt-1 text-sm text-ink-muted">
+          <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Reports</h1>
+          <p className="mt-1 text-sm sm:text-base text-ink-muted">
             Ranked summaries you can export straight to a spreadsheet.
           </p>
         </div>

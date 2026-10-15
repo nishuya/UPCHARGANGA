@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import Modal from '../../../components/ui/Modal';
-import Field from '../../../components/ui/Field';
 import Button from '../../../components/ui/Button';
 import ConfirmDialog from '../../../components/ui/ConfirmDialog';
 import {
@@ -18,10 +17,6 @@ const UNAVAILABILITY_REASONS = [
   { value: 'other', label: 'Other' },
 ];
 
-/**
- * Modal to manage doctor unavailability periods
- * Allows admin to add, edit, and delete periods when doctor is not available
- */
 const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -33,7 +28,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
   });
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  // Queries and mutations
   const { data: unavailabilityData, isLoading } = useGetUnavailability(doctorId);
   const createMutation = useCreateUnavailability(doctorId);
   const updateMutation = useUpdateUnavailability(doctorId);
@@ -41,7 +35,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
 
   const unavailabilityPeriods = unavailabilityData?.unavailability || [];
 
-  // Reset form
   const resetForm = () => {
     setFormData({
       startDate: '',
@@ -53,7 +46,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
     setEditingId(null);
   };
 
-  // Handle create/update submit
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -69,13 +61,11 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
 
     try {
       if (editingId) {
-        // Update existing
         await updateMutation.mutateAsync({
           unavailabilityId: editingId,
           data: formData,
         });
       } else {
-        // Create new
         await createMutation.mutateAsync(formData);
       }
       resetForm();
@@ -84,7 +74,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
     }
   };
 
-  // Handle delete
   const handleDelete = async () => {
     try {
       await deleteMutation.mutateAsync(confirmDelete._id);
@@ -94,7 +83,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
     }
   };
 
-  // Handle edit button
   const handleEdit = (period) => {
     setEditingId(period._id);
     setFormData({
@@ -106,7 +94,6 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
     setIsCreating(true);
   };
 
-  // Format date for display
   const formatDate = (dateStr) => {
     return new Date(dateStr).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -120,67 +107,64 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
       <Modal isOpen={isOpen} onClose={onClose} size="lg">
         <Modal.Header>
           <div>
-            <h2 className="text-2xl font-bold text-neutral-900">
+            <h2 className="text-lg sm:text-2xl font-bold text-neutral-900 break-words">
               Unavailability for Dr. {doctorName}
             </h2>
-            <p className="mt-sm text-neutral-600">
-              Mark dates when this doctor is unavailable. Patients cannot book appointments during these periods.
+            <p className="mt-1 text-xs sm:text-sm text-neutral-600">
+              Mark dates when this doctor is unavailable. Patients cannot book appointments during
+              these periods.
             </p>
           </div>
         </Modal.Header>
 
         <Modal.Body>
-          {/* List of existing unavailability periods */}
           {!isCreating && (
-            <div className="mb-lg">
-              <div className="flex items-center justify-between mb-md">
-                <h3 className="text-lg font-semibold text-neutral-900">
+            <div className="mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h3 className="text-base sm:text-lg font-semibold text-neutral-900">
                   Unavailability Periods
                 </h3>
-                <Button
-                  size="sm"
-                  onClick={() => setIsCreating(true)}
-                >
+                <Button size="sm" onClick={() => setIsCreating(true)}>
                   + Add Period
                 </Button>
               </div>
 
               {isLoading ? (
-                <div className="text-center py-lg text-neutral-600">
+                <div className="text-center py-6 text-neutral-600">
                   Loading unavailability periods...
                 </div>
               ) : unavailabilityPeriods.length === 0 ? (
-                <div className="text-center py-lg text-neutral-600">
+                <div className="text-center py-6 text-neutral-600">
                   No unavailability periods set
                 </div>
               ) : (
-                <div className="space-y-md">
+                <div className="space-y-3">
                   {unavailabilityPeriods.map((period) => (
                     <div
                       key={period._id}
-                      className="p-md border border-neutral-200 rounded-lg hover:bg-neutral-50 transition"
+                      className="p-3.5 sm:p-md border border-neutral-200 rounded-lg hover:bg-neutral-50 transition"
                     >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-md mb-sm">
-                            <span className="font-semibold text-neutral-900">
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                            <span className="font-semibold text-neutral-900 text-sm sm:text-base">
                               {formatDate(period.startDate)} — {formatDate(period.endDate)}
                             </span>
-                            <span className="inline-block px-md py-xs bg-blue-100 text-blue-700 rounded text-sm font-medium">
-                              {UNAVAILABILITY_REASONS.find(r => r.value === period.reason)?.label || period.reason}
+                            <span className="inline-block px-2.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                              {UNAVAILABILITY_REASONS.find((r) => r.value === period.reason)
+                                ?.label || period.reason}
                             </span>
                           </div>
                           {period.notes && (
-                            <p className="text-sm text-neutral-600">
-                              {period.notes}
-                            </p>
+                            <p className="text-sm text-neutral-600 break-words">{period.notes}</p>
                           )}
                         </div>
-                        <div className="flex gap-sm ml-md">
+                        <div className="flex gap-2 shrink-0">
                           <Button
                             size="sm"
                             variant="secondary"
                             onClick={() => handleEdit(period)}
+                            className="flex-1 sm:flex-none"
                           >
                             Edit
                           </Button>
@@ -188,6 +172,7 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
                             size="sm"
                             variant="danger"
                             onClick={() => setConfirmDelete(period)}
+                            className="flex-1 sm:flex-none"
                           >
                             Delete
                           </Button>
@@ -200,49 +185,42 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
             </div>
           )}
 
-          {/* Form to create/edit unavailability */}
           {isCreating && (
-            <form onSubmit={handleSubmit} className="space-y-md">
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-xs">
-                  Start Date *
-                </label>
-                <input
-                  type="date"
-                  value={formData.startDate}
-                  onChange={(e) =>
-                    setFormData({ ...formData, startDate: e.target.value })
-                  }
-                  className="w-full px-md py-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                />
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1">
+                    Start Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.startDate}
+                    onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-neutral-700 mb-1">
+                    End Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.endDate}
+                    onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-xs">
-                  End Date *
-                </label>
-                <input
-                  type="date"
-                  value={formData.endDate}
-                  onChange={(e) =>
-                    setFormData({ ...formData, endDate: e.target.value })
-                  }
-                  className="w-full px-md py-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-xs">
-                  Reason
-                </label>
+                <label className="block text-sm font-medium text-neutral-700 mb-1">Reason</label>
                 <select
                   value={formData.reason}
-                  onChange={(e) =>
-                    setFormData({ ...formData, reason: e.target.value })
-                  }
-                  className="w-full px-md py-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {UNAVAILABILITY_REASONS.map((r) => (
                     <option key={r.value} value={r.value}>
@@ -253,36 +231,35 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-xs">
+                <label className="block text-sm font-medium text-neutral-700 mb-1">
                   Notes (Optional)
                 </label>
                 <textarea
                   value={formData.notes}
-                  onChange={(e) =>
-                    setFormData({ ...formData, notes: e.target.value })
-                  }
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
                   placeholder="Add any additional notes..."
                   rows={3}
-                  className="w-full px-md py-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               {createMutation.isError && (
-                <div className="p-md bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                <div className="p-3 bg-danger-50 border border-danger-200 rounded text-danger-700 text-sm">
                   {getApiErrorMessage(createMutation.error)}
                 </div>
               )}
 
               {updateMutation.isError && (
-                <div className="p-md bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                <div className="p-3 bg-danger-50 border border-danger-200 rounded text-danger-700 text-sm">
                   {getApiErrorMessage(updateMutation.error)}
                 </div>
               )}
 
-              <div className="flex gap-md">
+              <div className="flex flex-col xs:flex-row gap-2">
                 <Button
                   type="submit"
                   isLoading={createMutation.isPending || updateMutation.isPending}
+                  className="w-full xs:w-auto"
                 >
                   {editingId ? 'Update Period' : 'Add Period'}
                 </Button>
@@ -290,6 +267,7 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
                   type="button"
                   variant="secondary"
                   onClick={resetForm}
+                  className="w-full xs:w-auto"
                 >
                   Cancel
                 </Button>
@@ -299,27 +277,22 @@ const DoctorUnavailabilityModal = ({ isOpen, onClose, doctorId, doctorName }) =>
         </Modal.Body>
 
         <Modal.Footer>
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} className="w-full xs:w-auto">
             Close
           </Button>
         </Modal.Footer>
       </Modal>
 
-      {/* Confirm delete dialog */}
       {confirmDelete && (
         <ConfirmDialog
-          title={`Delete Unavailability Period?`}
+          title="Delete Unavailability Period?"
           description={`This will allow bookings for ${formatDate(
             confirmDelete.startDate
           )} to ${formatDate(confirmDelete.endDate)} again.`}
           confirmLabel="Delete"
           isDangerous
           isLoading={deleteMutation.isPending}
-          error={
-            deleteMutation.isError
-              ? getApiErrorMessage(deleteMutation.error)
-              : null
-          }
+          error={deleteMutation.isError ? getApiErrorMessage(deleteMutation.error) : null}
           onConfirm={handleDelete}
           onCancel={() => setConfirmDelete(null)}
         />

@@ -55,17 +55,17 @@ const AdminStaffPage = () => {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 sm:mb-2xl">
         <div>
-          <h1 className="text-3xl font-bold text-neutral-900">Staff</h1>
-          <p className="mt-md text-lg text-neutral-600">
+          <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Staff</h1>
+          <p className="mt-1 sm:mt-md text-sm sm:text-lg text-neutral-600">
             Receptionist and Doctor Assistant accounts managed platform-wide.
           </p>
         </div>
-        <Button onClick={() => setIsFormOpen(true)}>+ Add Staff Member</Button>
+        <Button onClick={() => setIsFormOpen(true)} className="w-full sm:w-auto">+ Add Staff Member</Button>
       </div>
 
-      <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-center">
+      <div className="mb-4 sm:mb-lg flex flex-col gap-3 sm:gap-md sm:flex-row sm:items-center">
         <Field
           className="w-full sm:w-56"
           as="select"

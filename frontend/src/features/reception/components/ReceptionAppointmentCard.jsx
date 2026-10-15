@@ -17,22 +17,6 @@ const TERMINAL_STATUSES = ['completed', 'cancelled', 'no-show'];
 
 const formatTime = (slot) => (slot ? `${slot.start}–${slot.end}` : '—');
 
-/**
- * Premium Reception Appointment Card
- *
- * Professional card for managing appointments at reception.
- * Shows:
- * - Token number (prominent)
- * - Patient name and contact
- * - Doctor and department
- * - Appointment time
- * - Verification and payment status
- * - All available actions for current status
- *
- * One card = one appointment with all reception operations.
- * Uses same component on Today's Patients board and Search results.
- */
-
 const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
   const [openPanel, setOpenPanel] = useState(null);
   const [notes, setNotes] = useState('');
@@ -83,97 +67,100 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
   return (
     <Card className="hover:shadow-lg hover:border-upchar-300 transition-all duration-base">
-      {/* Main Content: Two Column Layout */}
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-lg mb-lg">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4 sm:mb-lg">
         {/* Left: Token, Patient, Doctor */}
         <div className="flex-1 min-w-0">
-          {/* Token Number - Prominent */}
-          <div className="inline-flex items-center gap-sm px-md py-sm rounded-lg bg-gold-50 border border-gold-200 mb-md">
-            <span className="text-label font-black text-gold-700">
-              Token #{appointment.tokenNumber}
-            </span>
+          <div className="flex items-center justify-between gap-2 mb-2.5">
+            <div className="inline-flex items-center gap-sm px-2.5 py-1 rounded-lg bg-gold-50 border border-gold-200">
+              <span className="text-label font-black text-gold-700">
+                Token #{appointment.tokenNumber}
+              </span>
+            </div>
+            <div className="sm:hidden">
+              <Badge status={appointment.status} />
+            </div>
           </div>
 
-          {/* Patient */}
-          <h3 className="text-h3 font-bold text-neutral-900 truncate">
+          <h3 className="text-base sm:text-h3 font-bold text-neutral-900 break-words">
             {appointment.patient?.fullName}
           </h3>
 
-          {/* Patient Contact */}
           {appointment.patient?.phone && (
-            <p className="mt-sm text-body-sm text-neutral-600">
+            <p className="mt-1 text-body-sm text-neutral-600">
               📞 {appointment.patient.phone}
             </p>
           )}
 
-          {/* Doctor & Department */}
-          <div className="mt-md space-y-sm">
-            <p className="text-body-sm text-neutral-900">
+          <div className="mt-2.5 space-y-1">
+            <p className="text-body-sm text-neutral-900 break-words">
               <span className="font-semibold">Dr. {appointment.doctor?.user?.fullName}</span>
               {appointment.department?.name && (
                 <span className="text-neutral-600"> · {appointment.department.name}</span>
               )}
             </p>
 
-            {/* Booking Reference */}
-            <p className="text-caption font-mono text-neutral-600">
+            <p className="text-caption font-mono text-neutral-600 break-all">
               Booking: {appointment.bookingNumber}
             </p>
           </div>
         </div>
 
         {/* Right: Status & Metadata */}
-        <div className="flex flex-col items-end gap-md sm:pt-1">
-          {/* Status Badge */}
-          <Badge status={appointment.status} />
+        <div className="flex flex-row flex-wrap sm:flex-col items-center sm:items-end justify-between gap-2 sm:pt-1 border-t border-neutral-100 pt-3 sm:border-t-0 sm:pt-0">
+          <div className="hidden sm:block">
+            <Badge status={appointment.status} />
+          </div>
 
-          {/* Verification Status */}
-          <div className="text-right">
-            <div className={`text-caption font-semibold ${appointment.verifiedAt ? 'text-success-700' : 'text-warning-700'}`}>
+          <div className="flex flex-wrap sm:flex-col items-center sm:items-end gap-x-4 gap-y-1 text-left sm:text-right">
+            <div
+              className={`text-caption font-semibold ${
+                appointment.verifiedAt ? 'text-success-700' : 'text-warning-700'
+              }`}
+            >
               {appointment.verifiedAt ? '✓ Verified' : '⚠ Not verified'}
             </div>
 
-            {/* Payment Status */}
-            <div className={`text-caption font-semibold mt-sm ${appointment.payment ? 'text-success-700' : 'text-danger-700'}`}>
+            <div
+              className={`text-caption font-semibold ${
+                appointment.payment ? 'text-success-700' : 'text-danger-700'
+              }`}
+            >
               {appointment.payment ? `✓ Paid ₹${appointment.payment.amount}` : '✗ Payment pending'}
             </div>
           </div>
 
-          {/* Queue Status */}
           {appointment.isInDoctorQueue && (
-            <span className="inline-flex items-center gap-xs px-md py-sm rounded-full bg-teal-50 border border-teal-200">
+            <span className="inline-flex items-center gap-xs px-2.5 py-1 rounded-full bg-teal-50 border border-teal-200">
               <span className="text-caption font-semibold text-teal-700">In queue</span>
             </span>
           )}
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="border-t border-neutral-200 my-lg" />
+      <div className="border-t border-neutral-200 my-3 sm:my-lg" />
 
-      {/* Time & Location */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-md mb-lg text-sm">
+      <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 gap-3 mb-4 sm:mb-lg text-sm">
         <div>
           <p className="text-caption font-medium text-neutral-500">Time Slot</p>
-          <p className="mt-sm font-semibold text-neutral-900">{formatTime(appointment.timeSlot)}</p>
+          <p className="mt-0.5 font-semibold text-neutral-900">{formatTime(appointment.timeSlot)}</p>
         </div>
         {hospitalName && (
           <div>
             <p className="text-caption font-medium text-neutral-500">Hospital</p>
-            <p className="mt-sm font-semibold text-neutral-900 truncate">{hospitalName}</p>
+            <p className="mt-0.5 font-semibold text-neutral-900 break-words">{hospitalName}</p>
           </div>
         )}
       </div>
 
       {/* Actions */}
       {canManage && (
-        <div className="flex flex-wrap gap-md">
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:flex sm:flex-wrap gap-2">
           {!appointment.verifiedAt && (
             <Button
               size="sm"
               variant="secondary"
               onClick={() => setOpenPanel('verify')}
-              className="flex-1 sm:flex-none"
+              className="w-full sm:w-auto"
             >
               Verify Patient
             </Button>
@@ -183,7 +170,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               size="sm"
               variant="secondary"
               onClick={() => setOpenPanel('payment')}
-              className="flex-1 sm:flex-none"
+              className="w-full sm:w-auto"
             >
               Collect Payment
             </Button>
@@ -193,7 +180,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               size="sm"
               isLoading={arriveMutation.isPending}
               onClick={() => arriveMutation.mutate({ id: appointment._id })}
-              className="flex-1 sm:flex-none"
+              className="w-full sm:w-auto"
             >
               Mark Arrived
             </Button>
@@ -204,7 +191,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               variant="secondary"
               isLoading={pendingMutation.isPending}
               onClick={() => pendingMutation.mutate({ id: appointment._id })}
-              className="flex-1 sm:flex-none"
+              className="w-full sm:w-auto"
             >
               Mark Pending
             </Button>
@@ -214,7 +201,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               size="sm"
               isLoading={moveMutation.isPending}
               onClick={() => moveMutation.mutate({ id: appointment._id })}
-              className="flex-1 sm:flex-none"
+              className="w-full sm:w-auto"
             >
               Move to Queue
             </Button>
@@ -223,7 +210,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
             size="sm"
             variant="ghost"
             onClick={() => setOpenPanel('no-show')}
-            className="flex-1 sm:flex-none"
+            className="w-full sm:w-auto"
           >
             Mark No-show
           </Button>
@@ -231,7 +218,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
             size="sm"
             variant="ghost"
             onClick={() => setOpenPanel('cancelled')}
-            className="flex-1 sm:flex-none"
+            className="w-full sm:w-auto"
           >
             Cancel
           </Button>
@@ -240,9 +227,9 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
       {/* Verification Panel */}
       {openPanel === 'verify' && (
-        <div className="mt-lg space-y-lg rounded-lg border border-neutral-200 bg-neutral-50 p-lg">
+        <div className="mt-4 space-y-4 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
           <div>
-            <h4 className="text-body font-semibold text-neutral-900 mb-md">Verify Patient</h4>
+            <h4 className="text-body font-semibold text-neutral-900 mb-2">Verify Patient</h4>
             <Field
               label="Verification notes (optional)"
               as="textarea"
@@ -257,15 +244,16 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               {getApiErrorMessage(verifyMutation.error, 'Verification failed.')}
             </p>
           )}
-          <div className="flex gap-md">
+          <div className="flex flex-col xs:flex-row gap-2">
             <Button
               size="sm"
               isLoading={verifyMutation.isPending}
               onClick={handleVerify}
+              className="w-full xs:w-auto"
             >
               Confirm verification
             </Button>
-            <Button size="sm" variant="ghost" onClick={closePanel}>
+            <Button size="sm" variant="ghost" onClick={closePanel} className="w-full xs:w-auto">
               Cancel
             </Button>
           </div>
@@ -274,10 +262,10 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
       {/* Payment Panel */}
       {openPanel === 'payment' && (
-        <div className="mt-lg space-y-lg rounded-lg border border-neutral-200 bg-neutral-50 p-lg">
+        <div className="mt-4 space-y-4 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
           <div>
-            <h4 className="text-body font-semibold text-neutral-900 mb-md">Collect Payment</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-lg">
+            <h4 className="text-body font-semibold text-neutral-900 mb-2">Collect Payment</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field
                 label="Payment method"
                 as="select"
@@ -291,7 +279,7 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
                 <option value="wallet">Wallet</option>
               </Field>
               <Field
-                label={`Amount (optional — defaults to ₹${appointment.doctor?.consultationFee ?? '—'})`}
+                label={`Amount (defaults to ₹${appointment.doctor?.consultationFee ?? '—'})`}
                 type="number"
                 min="0"
                 value={paymentAmount}
@@ -305,15 +293,16 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               {getApiErrorMessage(paymentMutation.error, 'Payment failed.')}
             </p>
           )}
-          <div className="flex gap-md">
+          <div className="flex flex-col xs:flex-row gap-2">
             <Button
               size="sm"
               isLoading={paymentMutation.isPending}
               onClick={handlePayment}
+              className="w-full xs:w-auto"
             >
               Confirm payment
             </Button>
-            <Button size="sm" variant="ghost" onClick={closePanel}>
+            <Button size="sm" variant="ghost" onClick={closePanel} className="w-full xs:w-auto">
               Cancel
             </Button>
           </div>
@@ -322,9 +311,9 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
       {/* No-show / Cancel Panel */}
       {(openPanel === 'no-show' || openPanel === 'cancelled') && (
-        <div className="mt-lg space-y-lg rounded-lg border-2 border-danger-200 bg-danger-50 p-lg">
+        <div className="mt-4 space-y-4 rounded-lg border-2 border-danger-200 bg-danger-50 p-4">
           <div>
-            <h4 className="text-body font-semibold text-danger-900 mb-md">
+            <h4 className="text-body font-semibold text-danger-900 mb-2">
               {openPanel === 'no-show' ? 'Mark as No-show' : 'Cancel Appointment'}
             </h4>
             <Field
@@ -341,16 +330,17 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
               {getApiErrorMessage(statusMutation.error, 'Update failed.')}
             </p>
           )}
-          <div className="flex gap-md">
+          <div className="flex flex-col xs:flex-row gap-2">
             <Button
               size="sm"
               variant="danger"
               isLoading={statusMutation.isPending}
               onClick={() => handleStatusUpdate(openPanel)}
+              className="w-full xs:w-auto"
             >
               Confirm
             </Button>
-            <Button size="sm" variant="ghost" onClick={closePanel}>
+            <Button size="sm" variant="ghost" onClick={closePanel} className="w-full xs:w-auto">
               Keep appointment
             </Button>
           </div>

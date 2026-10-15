@@ -24,15 +24,12 @@ const emptyForm = {
   licenseNumber: '',
   experienceYears: '',
   consultationFee: '',
-  qualifications: '', // NEW: qualifications as comma-separated string
+  qualifications: '',
   isAvailableToday: true,
   availability: emptyAvailability(),
   image: null,
 };
 
-/** Turns the Doctor document's `availability` array (only the days that
- * ARE configured) into the day-keyed map the form/table below works with,
- * so every weekday always has a row, whether it's set up yet or not. */
 const toAvailabilityFormState = (availability = []) => {
   const map = emptyAvailability();
   availability.forEach((slot) => {
@@ -49,12 +46,7 @@ const toAvailabilityFormState = (availability = []) => {
   return map;
 };
 
-/** Inverse of the above — only enabled days are sent to the API, since
- * an unchecked day simply shouldn't have an availability entry at all. */
 const toAvailabilityPayload = (availabilityForm) => {
-  console.log('🔄 [AVAILABILITY] Converting form availability to payload...');
-  console.log('   Form availability:', availabilityForm);
-
   const payload = WEEKDAYS
     .filter(({ value }) => availabilityForm[value]?.enabled)
     .map(({ value }) => ({
@@ -64,9 +56,6 @@ const toAvailabilityPayload = (availabilityForm) => {
       maxPatients: Number(availabilityForm[value].maxPatients) || 30,
       slotDurationMinutes: Number(availabilityForm[value].slotDurationMinutes) || 15,
     }));
-
-  console.log('   Payload availability:', payload);
-  console.log('   Total enabled days:', payload.length);
 
   return payload;
 };
@@ -83,27 +72,13 @@ const toFormState = (doctor) => {
     licenseNumber: doctor.licenseNumber ?? '',
     experienceYears: doctor.experienceYears ?? '',
     consultationFee: doctor.consultationFee ?? '',
-    qualifications: doctor.qualifications?.join(', ') ?? '', // Convert array to comma-separated string
+    qualifications: doctor.qualifications?.join(', ') ?? '',
     isAvailableToday: doctor.isAvailableToday ?? true,
     availability: toAvailabilityFormState(doctor.availability),
     image: null,
   };
 };
 
-/**
- * Doctor create/edit intentionally does NOT touch hospital/department
- * assignment on edit (the backend deliberately routes that through
- * dedicated assign-hospital/assign-department endpoints — see
- * doctors.service.js) or account fields like email/phone. Those two
- * fields are shown read-only in edit mode so the admin can still see
- * who they're editing.
- *
- * Weekly availability (which days/hours a doctor is bookable) IS editable
- * here in both create and edit mode — the backend has always accepted it
- * on both `POST /doctors` and `PATCH /doctors/:id`, this form just never
- * exposed it, which meant every doctor was silently created with
- * `availability: []` and could never be booked on any day at all.
- */
 const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
   const [form, setForm] = useState(emptyForm);
   const isEditing = !!doctor;
@@ -138,14 +113,10 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const availability = toAvailabilityPayload(form.availability);
-    // Convert comma-separated qualifications to array
     const qualifications = form.qualifications
       .split(',')
       .map((q) => q.trim())
       .filter((q) => q.length > 0);
-
-    console.log('📋 [DOCTOR FORM] Submitting with availability:', availability);
-    console.log('📋 [DOCTOR FORM] Qualifications:', qualifications);
 
     if (isEditing) {
       const payload = new FormData();
@@ -156,10 +127,8 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
       }
       payload.append('consultationFee', Number(form.consultationFee));
       payload.append('isAvailableToday', form.isAvailableToday);
-      payload.append('qualifications', JSON.stringify(qualifications)); // NEW
-      // CRITICAL: Always append availability as JSON string, even if empty
+      payload.append('qualifications', JSON.stringify(qualifications));
       payload.append('availability', JSON.stringify(availability));
-      console.log('📋 [DOCTOR FORM] Availability JSON string:', JSON.stringify(availability));
       if (form.image) {
         payload.append('image', form.image);
       }
@@ -180,10 +149,8 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
         payload.append('experienceYears', Number(form.experienceYears));
       }
       payload.append('consultationFee', Number(form.consultationFee));
-      payload.append('qualifications', JSON.stringify(qualifications)); // NEW
-      // CRITICAL: Always append availability as JSON string, even if empty
+      payload.append('qualifications', JSON.stringify(qualifications));
       payload.append('availability', JSON.stringify(availability));
-      console.log('📋 [DOCTOR FORM] Availability JSON string:', JSON.stringify(availability));
       if (form.image) {
         payload.append('image', form.image);
       }
@@ -283,16 +250,17 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
         />
 
         <div>
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <span className="text-sm font-medium text-ink">Weekly availability</span>
             {isEditing && (
-              <label className="flex items-center gap-2 text-xs text-ink-muted">
+              <label className="flex items-start sm:items-center gap-2 text-xs text-ink-muted">
                 <input
                   type="checkbox"
+                  className="mt-0.5 sm:mt-0"
                   checked={form.isAvailableToday}
                   onChange={(e) => setForm((prev) => ({ ...prev, isAvailableToday: e.target.checked }))}
                 />
-                Available today (overrides the weekly schedule for just today)
+                <span>Available today (overrides the weekly schedule for just today)</span>
               </label>
             )}
           </div>
@@ -300,7 +268,7 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
             Tick the days this doctor sees patients — patients can only book on ticked days.
           </p>
           <div className="overflow-x-auto rounded border border-surface-border">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[540px] text-sm">
               <thead className="bg-surface text-left text-xs text-ink-muted">
                 <tr>
                   <th className="px-3 py-2">Day</th>
@@ -316,7 +284,7 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
                   const dayForm = form.availability[value];
                   return (
                     <tr key={value} className="border-t border-surface-border">
-                      <td className="px-3 py-2 text-ink">{label}</td>
+                      <td className="px-3 py-2 text-ink whitespace-nowrap">{label}</td>
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
@@ -384,11 +352,11 @@ const DoctorFormModal = ({ isOpen, onClose, doctor = null }) => {
           <p className="text-xs font-medium text-danger">{getApiErrorMessage(mutation.error)}</p>
         )}
 
-        <div className="flex justify-end gap-2 border-t border-surface-border pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 border-t border-surface-border pt-4">
+          <Button type="button" variant="ghost" onClick={onClose} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="submit" isLoading={mutation.isPending}>
+          <Button type="submit" isLoading={mutation.isPending} className="w-full sm:w-auto">
             {isEditing ? 'Save changes' : 'Create doctor'}
           </Button>
         </div>

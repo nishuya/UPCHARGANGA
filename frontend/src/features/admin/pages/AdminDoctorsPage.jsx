@@ -46,16 +46,16 @@ const AdminDoctorsPage = () => {
   return (
     <div>
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 sm:mb-2xl">
         <div>
-          <h1 className="text-3xl font-bold text-neutral-900">Doctors</h1>
-          <p className="mt-md text-lg text-neutral-600">Manage doctors across all hospitals on the platform.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Doctors</h1>
+          <p className="mt-1 sm:mt-md text-sm sm:text-lg text-neutral-600">Manage doctors across all hospitals on the platform.</p>
         </div>
-        <Button onClick={() => setEditingDoctor({})}>+ New Doctor</Button>
+        <Button onClick={() => setEditingDoctor({})} className="w-full sm:w-auto">+ New Doctor</Button>
       </div>
 
       {/* Search and Filters */}
-      <div className="mb-xl flex flex-col gap-md sm:flex-row sm:items-center">
+      <div className="mb-6 sm:mb-xl flex flex-col gap-3 sm:gap-md sm:flex-row sm:items-center">
         <Field
           className="w-full sm:w-80"
           placeholder="Search by name or specialization…"
@@ -105,7 +105,7 @@ const AdminDoctorsPage = () => {
       {!isLoading && !isError && doctors.length > 0 && (
         <>
           {/* Cards Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-lg mb-2xl">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-lg mb-6 sm:mb-2xl">
             {doctors.map((doctor) => (
               <AdminCard
                 key={doctor._id}

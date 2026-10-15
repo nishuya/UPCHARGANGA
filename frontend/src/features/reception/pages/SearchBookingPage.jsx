@@ -17,13 +17,18 @@ const SearchBookingPage = () => {
   };
 
   return (
-    <div>
-      <h1 className="text-xl font-semibold text-ink">Search Booking</h1>
-      <p className="mt-1 text-sm text-ink-muted">
-        Look up any appointment by its booking reference — not limited to today.
-      </p>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Search Booking</h1>
+        <p className="mt-1.5 text-sm sm:text-body text-neutral-600">
+          Look up any appointment by its booking reference — not limited to today.
+        </p>
+      </div>
 
-      <form onSubmit={handleSubmit} className="mt-4 flex max-w-md items-end gap-3">
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-col xs:flex-row max-w-md items-stretch xs:items-end gap-3"
+      >
         <Field
           className="flex-1"
           label="Booking number"
@@ -32,16 +37,23 @@ const SearchBookingPage = () => {
           onChange={(e) => setInput(e.target.value)}
           required
         />
-        <Button type="submit">Search</Button>
+        <Button type="submit" className="w-full xs:w-auto">
+          Search
+        </Button>
       </form>
 
-      <div className="mt-6 max-w-2xl">
+      <div className="max-w-2xl">
         {isLoading && <Spinner label="Searching…" />}
         {isError && <ErrorNotice message="No appointment found with that booking number." />}
         {!isLoading && !isError && isFetched && !appointment && (
-          <EmptyState title="Nothing found" description="Double-check the booking reference and try again." />
+          <EmptyState
+            title="Nothing found"
+            description="Double-check the booking reference and try again."
+          />
         )}
-        {!isLoading && !isError && appointment && <ReceptionAppointmentCard appointment={appointment} />}
+        {!isLoading && !isError && appointment && (
+          <ReceptionAppointmentCard appointment={appointment} />
+        )}
         {!term && (
           <EmptyState
             title="Search for a booking"

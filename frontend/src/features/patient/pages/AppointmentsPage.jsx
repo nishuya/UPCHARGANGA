@@ -18,29 +18,23 @@ const STATUS_OPTIONS = [
 ];
 
 /**
- * Premium UpcharGanga Appointments List Page
- *
- * Displays all patient appointments with:
- * - Filter by status
- * - Quick booking action
- * - Professional empty/loading/error states
- * - Responsive appointment cards
+ * Premium UpcharGanga Appointments List Page — Responsive
  */
 const AppointmentsPage = () => {
   const [status, setStatus] = useState('');
   const { data: appointments, isLoading, isError } = useMyAppointments(status ? { status } : {});
 
   return (
-    <div className="space-y-2xl">
+    <div className="space-y-6 sm:space-y-2xl">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-lg">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-display font-bold text-neutral-900">My Appointments</h1>
-          <p className="mt-md text-body text-neutral-600">
+          <h1 className="text-2xl sm:text-display font-bold text-neutral-900">My Appointments</h1>
+          <p className="mt-1.5 sm:mt-md text-body text-neutral-600">
             Track your bookings, queue positions, and appointment history.
           </p>
         </div>
-        <Link to={ROUTES.PATIENT.CHOOSE_CITY}>
+        <Link to={ROUTES.PATIENT.CHOOSE_CITY} className="w-full sm:w-auto shrink-0">
           <Button size="lg" className="w-full sm:w-auto">
             + Book new
           </Button>
@@ -48,7 +42,7 @@ const AppointmentsPage = () => {
       </div>
 
       {/* Filter Section */}
-      <div className="max-w-sm">
+      <div className="w-full sm:max-w-xs">
         <Field
           as="select"
           label="Filter by status"
@@ -63,10 +57,8 @@ const AppointmentsPage = () => {
         </Field>
       </div>
 
-      {/* Loading State */}
       {isLoading && <Spinner label="Loading your appointments…" />}
 
-      {/* Error State */}
       {isError && (
         <ErrorNotice
           message="Couldn't load your appointments right now."
@@ -81,14 +73,13 @@ const AppointmentsPage = () => {
         />
       )}
 
-      {/* Empty State */}
       {!isLoading && !isError && appointments?.length === 0 && (
         <EmptyState
           title="No appointments match this filter"
           description={
             status
               ? 'Try selecting a different status or book a new appointment.'
-              : 'You haven\'t booked any appointments yet. Start by booking your first appointment.'
+              : "You haven't booked any appointments yet. Start by booking your first appointment."
           }
           action={
             <Link to={ROUTES.PATIENT.CHOOSE_CITY}>
@@ -100,9 +91,8 @@ const AppointmentsPage = () => {
         />
       )}
 
-      {/* Appointments List */}
       {!isLoading && !isError && appointments?.length > 0 && (
-        <div className="space-y-md">
+        <div className="space-y-3 sm:space-y-md">
           {appointments.map((appointment) => (
             <AppointmentCard key={appointment._id} appointment={appointment} />
           ))}

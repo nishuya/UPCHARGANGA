@@ -25,14 +25,7 @@ const formatTime = (value) =>
   });
 
 /**
- * Premium UpcharGanga Appointment Tracking Page
- *
- * Live queue tracking with:
- * - Real-time position updates
- * - Prominent token display
- * - Live estimated wait time
- * - Cancel option for pending appointments
- * - Notification when called
+ * Premium UpcharGanga Appointment Tracking Page — Responsive
  */
 const AppointmentTrackPage = () => {
   const { id } = useParams();
@@ -64,9 +57,7 @@ const AppointmentTrackPage = () => {
 
   const handleCancel = async () => {
     try {
-      console.log('🚫 Cancelling appointment:', id);
       await cancelMutation.mutateAsync({ id, cancellationReason: cancelReason });
-      console.log('✅ Appointment cancelled successfully');
       navigate(ROUTES.PATIENT.APPOINTMENTS);
     } catch (err) {
       console.error('❌ Cancellation failed:', err);
@@ -78,58 +69,66 @@ const AppointmentTrackPage = () => {
       {/* Back Link */}
       <Link
         to={ROUTES.PATIENT.APPOINTMENTS}
-        className="text-sm font-medium text-neutral-600 hover:text-upchar-600 transition-colors duration-fast mb-lg inline-block"
+        className="text-sm font-medium text-neutral-600 hover:text-upchar-600 transition-colors duration-fast mb-4 inline-block"
       >
         ← Back to My Appointments
       </Link>
 
       {/* Header */}
-      <div className="mt-lg flex items-start justify-between gap-lg">
-        <div>
-          <h1 className="text-h1 font-bold text-neutral-900">
+      <div className="mt-2 flex flex-col xs:flex-row xs:items-start xs:justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-h1 font-bold text-neutral-900 break-words">
             Dr. {appointment.doctor?.user?.fullName}
           </h1>
-          <p className="mt-sm text-body-sm text-neutral-600">{appointment.hospital?.name}</p>
+          <p className="mt-1 text-body-sm text-neutral-600 break-words">
+            {appointment.hospital?.name}
+          </p>
           {appointment.hospital?.address?.line1 && (
-            <p className="text-caption text-neutral-500">{appointment.hospital.address.line1}</p>
+            <p className="text-caption text-neutral-500 break-words">
+              {appointment.hospital.address.line1}
+            </p>
           )}
         </div>
-        <PBadge status={live?.called ? 'in-consultation' : appointment.status} />
+        <div className="shrink-0">
+          <PBadge status={live?.called ? 'in-consultation' : appointment.status} />
+        </div>
       </div>
 
-      {/* Token Display - Signature Element */}
-      <div className="mt-2xl flex flex-wrap items-center gap-xl rounded-2xl border border-upchar-200 bg-upchar-50/60 px-2xl py-xl">
+      {/* Token Display — Responsive Stacked on Mobile, Row on Tablet/Desktop */}
+      <div className="mt-6 sm:mt-2xl flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-4 sm:gap-xl rounded-2xl border border-upchar-200 bg-upchar-50/60 p-4 sm:px-2xl sm:py-xl">
         <div>
           <p className="text-label font-medium uppercase tracking-widest text-neutral-500">
             Your token
           </p>
-          <p className="font-display text-5xl font-bold text-upchar-600 mt-md">
+          <p className="font-display text-4xl sm:text-5xl font-bold text-upchar-600 mt-1 sm:mt-md">
             #{appointment.tokenNumber}
           </p>
         </div>
 
-        {/* Estimated Consultation Time - Primary Display */}
-        {live?.estimatedConsultationStartTime != null && live?.estimatedConsultationEndTime != null ? (
-          <div className="border-l border-upchar-200 pl-xl">
+        {/* Estimated Consultation Time */}
+        {live?.estimatedConsultationStartTime != null &&
+        live?.estimatedConsultationEndTime != null ? (
+          <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Estimated consultation time</p>
-            <p className="text-lg font-bold text-upchar-600 mt-sm">
-              {formatTime(live.estimatedConsultationStartTime)} – {formatTime(live.estimatedConsultationEndTime)}
+            <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
+              {formatTime(live.estimatedConsultationStartTime)} –{' '}
+              {formatTime(live.estimatedConsultationEndTime)}
             </p>
           </div>
         ) : appointment.timeSlot ? (
-          <div className="border-l border-upchar-200 pl-xl">
+          <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Booked time slot</p>
-            <p className="text-lg font-bold text-upchar-600 mt-sm">
+            <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
               {appointment.timeSlot.start} – {appointment.timeSlot.end}
             </p>
           </div>
         ) : null}
 
-        {/* Queue Position (Informational Only) */}
+        {/* Queue Position */}
         {live?.queuePosition != null && (
-          <div className="border-l border-upchar-200 pl-xl">
+          <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Position in queue</p>
-            <p className="text-2xl font-bold text-neutral-900 mt-sm">
+            <p className="text-xl sm:text-2xl font-bold text-neutral-900 mt-1">
               {live.queuePosition}
             </p>
           </div>
@@ -138,25 +137,29 @@ const AppointmentTrackPage = () => {
 
       {/* Called Alert */}
       {live?.called && (
-        <div className="mt-xl rounded-lg border border-success-200 bg-success-50 px-lg py-md">
-          <p className="text-base font-semibold text-success-700">
-            ✓ You're being called — please proceed to the consultation room now.
+        <div className="mt-4 sm:mt-xl rounded-lg border border-success-200 bg-success-50 px-4 py-3">
+          <p className="text-sm sm:text-base font-semibold text-success-700">
+            ✓ You&apos;re being called — please proceed to the consultation room now.
           </p>
         </div>
       )}
 
       {/* Details Card */}
-      <Card className="mt-xl">
-        <dl className="space-y-lg">
-          <div className="flex justify-between items-start">
+      <Card className="mt-4 sm:mt-xl">
+        <dl className="space-y-4">
+          <div className="flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
             <dt className="text-body-sm text-neutral-600">Booking reference</dt>
-            <dd className="text-body font-semibold text-neutral-900">{appointment.bookingNumber}</dd>
+            <dd className="text-body font-semibold text-neutral-900 font-mono break-all">
+              {appointment.bookingNumber}
+            </dd>
           </div>
-          <div className="border-t border-neutral-100 pt-lg flex justify-between items-start">
+          <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
             <dt className="text-body-sm text-neutral-600">Date</dt>
-            <dd className="text-body font-semibold text-neutral-900">{formatDate(appointment.appointmentDate)}</dd>
+            <dd className="text-body font-semibold text-neutral-900">
+              {formatDate(appointment.appointmentDate)}
+            </dd>
           </div>
-          <div className="flex justify-between items-start">
+          <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
             <dt className="text-body-sm text-neutral-600">Time slot</dt>
             <dd className="text-body font-semibold text-neutral-900">
               {appointment.timeSlot?.start}–{appointment.timeSlot?.end}
@@ -167,14 +170,14 @@ const AppointmentTrackPage = () => {
 
       {/* Cancellation Reason */}
       {appointment.status === 'cancelled' && appointment.cancellationReason && (
-        <p className="mt-xl text-body-sm text-neutral-600">
+        <p className="mt-4 text-body-sm text-neutral-600 break-words">
           Cancellation reason: {appointment.cancellationReason}
         </p>
       )}
 
       {/* Cancel Appointment */}
       {canCancel && (
-        <div className="mt-xl">
+        <div className="mt-6">
           {!showCancelForm ? (
             <Button
               variant="ghost"
@@ -185,22 +188,24 @@ const AppointmentTrackPage = () => {
               Cancel appointment
             </Button>
           ) : (
-            <Card variant="warning" className="p-lg">
-              <p className="text-body font-semibold text-neutral-900 mb-lg">
+            <Card className="p-4 sm:p-lg border-warning-200 bg-warning-50/40">
+              <p className="text-body font-semibold text-neutral-900 mb-3">
                 Are you sure you want to cancel?
               </p>
               <textarea
-                className="w-full rounded-md border border-warning-200 p-md text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-warning-500 focus:outline-none focus:shadow-focus-ring"
+                className="w-full rounded-md border border-warning-200 p-3 text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-warning-500 focus:outline-none focus:shadow-focus-ring"
                 placeholder="Reason (optional)"
                 value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)}
+                rows={3}
               />
-              <div className="mt-lg flex gap-md">
+              <div className="mt-3 flex flex-col xs:flex-row gap-2.5">
                 <Button
                   variant="danger"
                   size="sm"
                   isLoading={cancelMutation.isPending}
                   onClick={handleCancel}
+                  className="w-full xs:w-auto"
                 >
                   Confirm cancellation
                 </Button>
@@ -208,6 +213,7 @@ const AppointmentTrackPage = () => {
                   variant="ghost"
                   size="sm"
                   onClick={() => setShowCancelForm(false)}
+                  className="w-full xs:w-auto"
                 >
                   Keep appointment
                 </Button>

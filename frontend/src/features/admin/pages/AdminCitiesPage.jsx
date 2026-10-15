@@ -39,18 +39,18 @@ const AdminCitiesPage = () => {
   return (
     <div>
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 sm:mb-2xl">
         <div>
-          <h1 className="text-3xl font-bold text-neutral-900">Cities</h1>
-          <p className="mt-md text-lg text-neutral-600">
+          <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Cities</h1>
+          <p className="mt-1 sm:mt-md text-sm sm:text-lg text-neutral-600">
             Cities the platform operates in. Cities appear in dropdowns when creating hospitals.
           </p>
         </div>
-        <Button onClick={() => setEditingCity({})}>+ Add City</Button>
+        <Button onClick={() => setEditingCity({})} className="w-full sm:w-auto">+ Add City</Button>
       </div>
 
       {/* Search */}
-      <div className="mb-xl">
+      <div className="mb-6 sm:mb-xl">
         <Field
           className="w-full sm:w-80"
           placeholder="Search by city name…"
@@ -84,7 +84,7 @@ const AdminCitiesPage = () => {
       {!isLoading && !isError && cities.length > 0 && (
         <>
           {/* Cards Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-lg mb-2xl">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-lg mb-6 sm:mb-2xl">
             {cities.map((city) => (
               <AdminCard
                 key={city._id}
@@ -128,4 +128,3 @@ const AdminCitiesPage = () => {
 };
 
 export default AdminCitiesPage;
-

@@ -19,11 +19,11 @@ const AppointmentDetailModal = ({ isOpen, onClose, appointmentId }) => {
       {appointment && (
         <div className="space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-lg font-semibold text-ink">
+            <div className="min-w-0">
+              <p className="text-base sm:text-lg font-semibold text-ink break-words">
                 Token #{appointment.tokenNumber} · {appointment.bookingNumber}
               </p>
-              <p className="text-sm text-ink-muted">
+              <p className="text-xs sm:text-sm text-ink-muted">
                 {formatDate(appointment.appointmentDate)} · {appointment.timeSlot?.start}–
                 {appointment.timeSlot?.end}
               </p>
@@ -31,25 +31,25 @@ const AppointmentDetailModal = ({ isOpen, onClose, appointmentId }) => {
             <Badge status={appointment.status} />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded border border-surface-border bg-surface p-3">
+          <div className="grid gap-3 sm:gap-4 sm:grid-cols-2">
+            <div className="rounded border border-surface-border bg-surface p-3 min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">Patient</p>
-              <p className="mt-1 text-sm font-medium text-ink">{appointment.patient?.fullName}</p>
+              <p className="mt-1 text-sm font-medium text-ink break-words">{appointment.patient?.fullName}</p>
               <p className="text-xs text-ink-subtle">{appointment.patient?.phone}</p>
-              <p className="text-xs text-ink-subtle">{appointment.patient?.email}</p>
+              <p className="text-xs text-ink-subtle break-all">{appointment.patient?.email}</p>
             </div>
-            <div className="rounded border border-surface-border bg-surface p-3">
+            <div className="rounded border border-surface-border bg-surface p-3 min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">Doctor</p>
-              <p className="mt-1 text-sm font-medium text-ink">Dr. {appointment.doctor?.user?.fullName}</p>
-              <p className="text-xs text-ink-subtle">{appointment.doctor?.specialization}</p>
+              <p className="mt-1 text-sm font-medium text-ink break-words">Dr. {appointment.doctor?.user?.fullName}</p>
+              <p className="text-xs text-ink-subtle break-words">{appointment.doctor?.specialization}</p>
             </div>
-            <div className="rounded border border-surface-border bg-surface p-3">
+            <div className="rounded border border-surface-border bg-surface p-3 min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">Hospital</p>
-              <p className="mt-1 text-sm font-medium text-ink">{appointment.hospital?.name}</p>
+              <p className="mt-1 text-sm font-medium text-ink break-words">{appointment.hospital?.name}</p>
             </div>
-            <div className="rounded border border-surface-border bg-surface p-3">
+            <div className="rounded border border-surface-border bg-surface p-3 min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">Department</p>
-              <p className="mt-1 text-sm font-medium text-ink">{appointment.department?.name}</p>
+              <p className="mt-1 text-sm font-medium text-ink break-words">{appointment.department?.name}</p>
             </div>
           </div>
 
@@ -57,15 +57,15 @@ const AppointmentDetailModal = ({ isOpen, onClose, appointmentId }) => {
             <div className="rounded border border-surface-border bg-surface p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">Visit details</p>
               {appointment.reasonForVisit && (
-                <p className="mt-1 text-sm text-ink">{appointment.reasonForVisit}</p>
+                <p className="mt-1 text-sm text-ink break-words">{appointment.reasonForVisit}</p>
               )}
               {appointment.symptoms?.length > 0 && (
-                <p className="mt-1 text-xs text-ink-subtle">Symptoms: {appointment.symptoms.join(', ')}</p>
+                <p className="mt-1 text-xs text-ink-subtle break-words">Symptoms: {appointment.symptoms.join(', ')}</p>
               )}
             </div>
           )}
 
-          <div className="flex flex-wrap gap-4 text-xs text-ink-subtle">
+          <div className="flex flex-col xs:flex-row flex-wrap gap-2 xs:gap-4 text-xs text-ink-subtle">
             <span>Consultation type: {appointment.consultationType}</span>
             <span>Verified: {appointment.verifiedAt ? formatDate(appointment.verifiedAt) : 'Not yet'}</span>
             <span>Arrived: {appointment.arrivedAt ? formatDate(appointment.arrivedAt) : 'Not yet'}</span>

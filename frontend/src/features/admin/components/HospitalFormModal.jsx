@@ -165,11 +165,11 @@ const HospitalFormModal = ({ isOpen, onClose, hospital = null }) => {
           </p>
         )}
 
-        <div className="flex justify-end gap-2 border-t border-surface-border pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 border-t border-surface-border pt-4">
+          <Button type="button" variant="ghost" onClick={onClose} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="submit" isLoading={mutation.isPending}>
+          <Button type="submit" isLoading={mutation.isPending} className="w-full sm:w-auto">
             {isEditing ? 'Save changes' : 'Create hospital'}
           </Button>
         </div>

@@ -11,24 +11,12 @@ import LiveIndicator from '../components/LiveIndicator';
 import ReceptionAppointmentCard from '../components/ReceptionAppointmentCard';
 
 /**
- * Premium UpcharGanga Reception Dashboard
- *
- * Real-time operations dashboard for reception staff.
- * Shows:
- * - Hospital name and context
- * - Today's appointments and queue status
- * - Real-time statistics (waiting, checked-in, in-consultation, etc.)
- * - Filterable appointment list
- * - Live connection indicator
- * - Search by booking number
- *
- * All operations happen here - verify, payment, status updates, queue management.
+ * Premium UpcharGanga Reception Dashboard — Responsive
  */
-
 const ReceptionDashboardPage = () => {
   const { user } = useAuth();
   const hospitalName = user?.hospital?.name || user?.assignedHospital?.name || 'Hospital';
-  
+
   const [status, setStatus] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 400);
@@ -48,34 +36,32 @@ const ReceptionDashboardPage = () => {
   );
   const { isConnected } = useReceptionLiveUpdates(doctorIds);
 
-  // Calculate key metrics
   const totalAppointments = appointments?.length ?? 0;
-  const waitingCount = appointments?.filter((a) => ['pending', 'confirmed'].includes(a.status)).length ?? 0;
+  const waitingCount =
+    appointments?.filter((a) => ['pending', 'confirmed'].includes(a.status)).length ?? 0;
 
   return (
-    <div className="space-y-2xl">
+    <div className="space-y-6 sm:space-y-2xl">
       {/* Header: Hospital Context & Status */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-lg">
-        <div>
-          <h1 className="text-display font-bold text-neutral-900">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-lg">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-display font-bold text-neutral-900 break-words">
             {hospitalName}
           </h1>
-          <p className="mt-sm text-body text-neutral-600">
-            Reception Dashboard — Today's Appointments
+          <p className="mt-1 text-body text-neutral-600">
+            Reception Dashboard — Today&apos;s Appointments
           </p>
         </div>
 
         {/* Live Indicator */}
-        <div className="flex items-center gap-md">
+        <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
           <LiveIndicator isConnected={isConnected} />
           <div className="text-right">
             <p className="text-caption font-semibold text-neutral-600">
               {totalAppointments} appointment{totalAppointments !== 1 ? 's' : ''} today
             </p>
             {waitingCount > 0 && (
-              <p className="text-caption text-blue-600 font-medium">
-                {waitingCount} waiting
-              </p>
+              <p className="text-caption text-blue-600 font-medium">{waitingCount} waiting</p>
             )}
           </div>
         </div>
@@ -85,30 +71,25 @@ const ReceptionDashboardPage = () => {
       {!isLoading && !isError && <StatsBar appointments={appointments ?? []} />}
 
       {/* Filters & Search */}
-      <div className="flex flex-col sm:flex-row gap-lg sm:items-end">
-        {/* Status Filters */}
-        <div className="flex-1">
+      <div className="flex flex-col lg:flex-row gap-4 lg:items-end">
+        <div className="flex-1 min-w-0">
           <StatusFilterTabs value={status} onChange={setStatus} />
         </div>
 
-        {/* Search Box */}
-        <div className="w-full sm:w-80">
+        <div className="w-full lg:w-80 shrink-0">
           <Field
             label="Search"
             placeholder="Search by booking number…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            autoFocus
           />
         </div>
       </div>
 
       {/* Appointments List */}
-      <div className="space-y-md">
-        {/* Loading State */}
+      <div className="space-y-3 sm:space-y-md">
         {isLoading && <Spinner label="Loading today's patients…" />}
 
-        {/* Error State */}
         {isError && (
           <ErrorNotice
             message="Couldn't load today's patients right now."
@@ -123,7 +104,6 @@ const ReceptionDashboardPage = () => {
           />
         )}
 
-        {/* Empty State */}
         {!isLoading && !isError && appointments?.length === 0 && (
           <EmptyState
             title="No appointments match this filter"
@@ -135,7 +115,6 @@ const ReceptionDashboardPage = () => {
           />
         )}
 
-        {/* Appointment Cards */}
         {!isLoading &&
           !isError &&
           appointments?.map((appointment) => (

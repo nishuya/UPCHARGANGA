@@ -23,18 +23,6 @@ const toFormState = (department, presetHospitalId) => {
   };
 };
 
-/**
- * Create/edit form for a Department. A department always belongs to
- * exactly one hospital (backend deliberately doesn't allow moving a
- * department to a different hospital after creation — see
- * departments.validation.js), so the Hospital field is only editable
- * while creating, then shown read-only afterward, same pattern as
- * DoctorFormModal.
- *
- * `presetHospitalId` lets AdminDepartmentsPage pre-select whichever
- * hospital is currently filtered on the page when opening "+ Add
- * Department", so the admin doesn't have to pick it twice.
- */
 const DepartmentFormModal = ({ isOpen, onClose, department = null, presetHospitalId = '' }) => {
   const [form, setForm] = useState(emptyForm);
   const isEditing = !!department;
@@ -124,11 +112,11 @@ const DepartmentFormModal = ({ isOpen, onClose, department = null, presetHospita
           </p>
         )}
 
-        <div className="flex justify-end gap-2 border-t border-surface-border pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 border-t border-surface-border pt-4">
+          <Button type="button" variant="ghost" onClick={onClose} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="submit" isLoading={mutation.isPending}>
+          <Button type="submit" isLoading={mutation.isPending} className="w-full sm:w-auto">
             {isEditing ? 'Save changes' : 'Add department'}
           </Button>
         </div>

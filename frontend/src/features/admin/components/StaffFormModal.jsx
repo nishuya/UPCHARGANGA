@@ -23,20 +23,6 @@ const emptyForm = {
   assignedDoctor: '',
 };
 
-/**
- * Create form for staff accounts. Both roles are admin-provisioned only
- * (never public self-registration — see PUBLIC_REGISTER_ROLES in
- * auth.validation.js):
- *  - Receptionist is scoped to a Hospital only.
- *  - Doctor Assistant is scoped to a Hospital AND one specific Doctor —
- *    the "Assigned doctor" field, enforced server-side on every queue
- *    action in doctorAssistant.service.js, not just at creation time.
- *
- * The admin sets the password directly here (rather than a system-
- * generated temp password) so the new staff member can log in right
- * away with credentials the admin already knows and can hand off
- * immediately, without depending on email delivery.
- */
 const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
   const [form, setForm] = useState(emptyForm);
 
@@ -54,7 +40,7 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
   const setField = (field) => (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }));
 
   const setRole = (role) =>
-    setForm((prev) => ({ ...prev, role, assignedDoctor: '' })); // reset doctor pick when switching roles
+    setForm((prev) => ({ ...prev, role, assignedDoctor: '' }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -82,12 +68,13 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
   return (
     <Modal title="Add Staff Member" isOpen={isOpen} onClose={onClose} size="lg">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 sm:flex gap-2">
           <Button
             type="button"
             size="sm"
             variant={form.role === ROLES.RECEPTIONIST ? 'primary' : 'secondary'}
             onClick={() => setRole(ROLES.RECEPTIONIST)}
+            className="w-full sm:w-auto"
           >
             Receptionist
           </Button>
@@ -96,6 +83,7 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
             size="sm"
             variant={form.role === ROLES.DOCTOR_ASSISTANT ? 'primary' : 'secondary'}
             onClick={() => setRole(ROLES.DOCTOR_ASSISTANT)}
+            className="w-full sm:w-auto"
           >
             Doctor Assistant
           </Button>
@@ -175,11 +163,11 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
           <p className="text-xs font-medium text-danger">{getApiErrorMessage(mutation.error)}</p>
         )}
 
-        <div className="flex justify-end gap-2 border-t border-surface-border pt-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 border-t border-surface-border pt-4">
+          <Button type="button" variant="ghost" onClick={onClose} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="submit" isLoading={mutation.isPending}>
+          <Button type="submit" isLoading={mutation.isPending} className="w-full sm:w-auto">
             Create {form.role === ROLES.RECEPTIONIST ? 'receptionist' : 'doctor assistant'}
           </Button>
         </div>

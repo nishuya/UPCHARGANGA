@@ -39,16 +39,16 @@ const AdminHospitalsPage = () => {
   return (
     <div>
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-2xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 sm:mb-2xl">
         <div>
-          <h1 className="text-3xl font-bold text-neutral-900">Hospitals</h1>
-          <p className="mt-md text-lg text-neutral-600">Every hospital on the platform, active or not.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900">Hospitals</h1>
+          <p className="mt-1 sm:mt-md text-sm sm:text-lg text-neutral-600">Every hospital on the platform, active or not.</p>
         </div>
-        <Button onClick={() => setEditingHospital({})}>+ New Hospital</Button>
+        <Button onClick={() => setEditingHospital({})} className="w-full sm:w-auto">+ New Hospital</Button>
       </div>
 
       {/* Search */}
-      <div className="mb-xl">
+      <div className="mb-6 sm:mb-xl">
         <Field
           className="w-full sm:w-80"
           placeholder="Search by hospital name…"
@@ -82,7 +82,7 @@ const AdminHospitalsPage = () => {
       {!isLoading && !isError && hospitals.length > 0 && (
         <>
           {/* Cards Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-lg mb-2xl">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-lg mb-6 sm:mb-2xl">
             {hospitals.map((hospital) => (
               <AdminCard
                 key={hospital._id}
