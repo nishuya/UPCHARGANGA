@@ -1,27 +1,10 @@
-/**
- * APPOINTMENTS SERVICE
- * ====================
- * Business logic for appointment management:
- * - Booking appointments
- * - Retrieving appointment details
- * - Updating appointment status
- * - Cancellation with notifications
- *
- * Note: Queue-specific logic is in QueueService
- * Reception-specific logic is in ReceptionService
- * This service handles core appointment operations
- */
-
 const Appointment = require('./appointments.model');
-const Doctor = require('../doctors/doctors.model');
-const Patient = require('../patients/patients.model');
+const Queue = require('../queue/queue.model');
+const QueueScheduler = require('../queue/queue.scheduler.service');
 const ApiError = require('../../errors/ApiError');
 const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
 const { APPOINTMENT_STATUS } = require('../../constants/enums');
 
-/**
- * Get appointment by ID
- */
 const getAppointmentById = async (appointmentId) => {
   const appointment = await Appointment.findById(appointmentId)
     .populate([
@@ -39,9 +22,6 @@ const getAppointmentById = async (appointmentId) => {
   return appointment;
 };
 
-/**
- * Get all appointments for a patient
- */
 const getPatientAppointments = async (patientId, { status, startDate, endDate } = {}) => {
   const query = { patient: patientId, isActive: true };
 
@@ -66,9 +46,6 @@ const getPatientAppointments = async (patientId, { status, startDate, endDate } 
   return appointments;
 };
 
-/**
- * Get all appointments for a doctor on a specific date
- */
 const getDoctorAppointmentsForDate = async (doctorId, appointmentDate, { status } = {}) => {
   const query = {
     doctor: doctorId,
@@ -91,9 +68,6 @@ const getDoctorAppointmentsForDate = async (doctorId, appointmentDate, { status 
   return appointments;
 };
 
-/**
- * Get all appointments for a hospital
- */
 const getHospitalAppointments = async (hospitalId, { status, date, doctorId } = {}) => {
   const query = { hospital: hospitalId, isActive: true };
 
@@ -120,13 +94,9 @@ const getHospitalAppointments = async (hospitalId, { status, date, doctorId } = 
   return appointments;
 };
 
-/**
- * Update appointment status
- */
 const updateAppointmentStatus = async (appointmentId, newStatus, reason = null) => {
   const appointment = await getAppointmentById(appointmentId);
 
-  // Validate status transition
   const terminalStatuses = [APPOINTMENT_STATUS.COMPLETED, APPOINTMENT_STATUS.CANCELLED];
   if (terminalStatuses.includes(appointment.status)) {
     throw new ApiError(400, `Cannot update appointment with status ${appointment.status}`);
@@ -143,9 +113,6 @@ const updateAppointmentStatus = async (appointmentId, newStatus, reason = null) 
   return appointment;
 };
 
-/**
- * Get appointment statistics for a doctor
- */
 const getDoctorAppointmentStats = async (doctorId, { startDate, endDate } = {}) => {
   const query = { doctor: doctorId, isActive: true };
 
@@ -159,69 +126,120 @@ const getDoctorAppointmentStats = async (doctorId, { startDate, endDate } = {}) 
 
   const stats = {
     total: appointments.length,
-    completed: appointments.filter(a => a.status === APPOINTMENT_STATUS.COMPLETED).length,
-    pending: appointments.filter(a => a.status === APPOINTMENT_STATUS.PENDING).length,
-    confirmed: appointments.filter(a => a.status === APPOINTMENT_STATUS.CONFIRMED).length,
-    cancelled: appointments.filter(a => a.status === APPOINTMENT_STATUS.CANCELLED).length,
-    noShow: appointments.filter(a => a.status === APPOINTMENT_STATUS.NO_SHOW).length,
+    completed: appointments.filter((a) => a.status === APPOINTMENT_STATUS.COMPLETED).length,
+    pending: appointments.filter((a) => a.status === APPOINTMENT_STATUS.PENDING).length,
+    confirmed: appointments.filter((a) => a.status === APPOINTMENT_STATUS.CONFIRMED).length,
+    cancelled: appointments.filter((a) => a.status === APPOINTMENT_STATUS.CANCELLED).length,
+    noShow: appointments.filter((a) => a.status === APPOINTMENT_STATUS.NO_SHOW).length,
   };
 
   return stats;
 };
 
 /**
- * Get the queue entry for an appointment (real-time queue data with estimates)
- * Used by patient portal to display current queue position and estimated times
+ * Get the authoritative queue entry for an appointment (with live recalculation if on service day).
  */
 const getQueueEntryForAppointment = async (appointmentId) => {
-  const appointment = await Appointment.findById(appointmentId).select('doctor appointmentDate tokenNumber');
+  const appointment = await Appointment.findById(appointmentId);
   if (!appointment) {
     throw new ApiError(404, 'Appointment not found');
   }
 
-  // Find the queue for this doctor/date
-  const Queue = require('../queue/queue.model');
-  const queue = await Queue.findOne({
-    doctor: appointment.doctor,
-    date: appointment.appointmentDate,
-  });
+  // Recalculate queue so timing status (e.g. late patient or doctor delay) reflects current server clock
+  const queue = await QueueScheduler.recalculateQueue(
+    appointment.doctor,
+    appointment.appointmentDate
+  );
 
   if (!queue) {
-    // No queue yet for this doctor/date (appointment is future-dated)
     return {
-      appointmentId,
+      appointmentId: appointment._id,
       tokenNumber: appointment.tokenNumber,
-      status: 'waiting',
-      queuePosition: null,
-      estimatedConsultationStartTime: null,
-      estimatedConsultationEndTime: null,
+      bookingNumber: appointment.bookingNumber,
+      status: appointment.status === 'cancelled' ? 'skipped' : 'waiting',
+      appointmentStatus: appointment.status,
+      queuePosition: appointment.queuePosition,
+      scheduledStartTime: appointment.timeSlot?.start || null,
+      scheduledEndTime: appointment.timeSlot?.end || null,
+      initialEstimatedStartTime: appointment.initialEstimatedStartTime,
+      initialEstimatedEndTime: appointment.initialEstimatedEndTime,
+      estimatedConsultationStartTime: appointment.estimatedConsultationStartTime,
+      estimatedConsultationEndTime: appointment.estimatedConsultationEndTime,
+      recommendedArrivalTime: appointment.recommendedArrivalTime,
+      arrivalStatus: appointment.arrivalStatus || 'not-arrived',
+      timingStatus: appointment.timingStatus || 'on-time',
+      delayMinutes: appointment.delayMinutes || 0,
+      aheadMinutes: appointment.aheadMinutes || 0,
+      statusLabel: appointment.statusLabel || 'On Time',
+      statusMessage: appointment.statusMessage || null,
+      recommendedAction: appointment.recommendedAction || null,
+      currentlyServingToken: 0,
+      averageConsultationMinutes: appointment.consultationDurationMinutes || 15,
+      queueVersion: appointment.queueVersion || 1,
+      called: false,
+      lastUpdatedAt: appointment.updatedAt,
     };
   }
 
-  // Find the entry for this appointment
   const entry = queue.entries.find((e) => e.appointment.toString() === appointmentId.toString());
 
   if (!entry) {
-    // Entry not in queue yet (not reached this doctor/date)
     return {
-      appointmentId,
+      appointmentId: appointment._id,
       tokenNumber: appointment.tokenNumber,
+      bookingNumber: appointment.bookingNumber,
       status: 'pending',
+      appointmentStatus: appointment.status,
       queuePosition: null,
-      estimatedConsultationStartTime: null,
-      estimatedConsultationEndTime: null,
+      scheduledStartTime: appointment.timeSlot?.start || null,
+      scheduledEndTime: appointment.timeSlot?.end || null,
+      estimatedConsultationStartTime: appointment.estimatedConsultationStartTime,
+      estimatedConsultationEndTime: appointment.estimatedConsultationEndTime,
+      recommendedArrivalTime: appointment.recommendedArrivalTime,
+      arrivalStatus: appointment.arrivalStatus || 'not-arrived',
+      timingStatus: appointment.timingStatus || 'on-time',
+      delayMinutes: appointment.delayMinutes || 0,
+      aheadMinutes: appointment.aheadMinutes || 0,
+      statusLabel: appointment.statusLabel || 'On Time',
+      statusMessage: appointment.statusMessage || null,
+      recommendedAction: appointment.recommendedAction || null,
+      currentlyServingToken: queue.currentTokenNumber,
+      averageConsultationMinutes: queue.averageConsultationMinutes,
+      queueVersion: queue.queueVersion || 1,
+      called: false,
+      lastUpdatedAt: queue.lastRecalculatedAt || queue.updatedAt,
     };
   }
 
-  // Return queue entry data
   return {
-    appointmentId,
+    appointmentId: appointment._id,
     tokenNumber: entry.tokenNumber,
+    bookingNumber: appointment.bookingNumber,
     status: entry.status,
+    appointmentStatus: appointment.status,
     queuePosition: entry.queuePosition,
+    scheduledStartTime: entry.scheduledStartTime,
+    scheduledEndTime: entry.scheduledEndTime,
+    initialEstimatedStartTime: entry.initialEstimatedStartTime,
+    initialEstimatedEndTime: entry.initialEstimatedEndTime,
+    estimatedStartTime: entry.estimatedStartTime,
+    estimatedEndTime: entry.estimatedEndTime,
     estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
     estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
+    recommendedArrivalTime: entry.recommendedArrivalTime,
+    estimatedWaitingMinutes: entry.estimatedWaitingMinutes,
     arrivalStatus: entry.arrivalStatus,
+    timingStatus: entry.timingStatus || 'on-time',
+    delayMinutes: entry.delayMinutes || 0,
+    aheadMinutes: entry.aheadMinutes || 0,
+    statusLabel: entry.statusLabel || 'On Time',
+    statusMessage: entry.statusMessage || null,
+    recommendedAction: entry.recommendedAction || null,
+    currentlyServingToken: queue.currentTokenNumber,
+    averageConsultationMinutes: queue.averageConsultationMinutes,
+    queueVersion: queue.queueVersion || 1,
+    called: ['called', 'in-consultation'].includes(entry.status),
+    lastUpdatedAt: entry.lastUpdatedAt || queue.lastRecalculatedAt,
   };
 };
 

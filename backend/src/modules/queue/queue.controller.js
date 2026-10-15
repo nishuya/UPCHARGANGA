@@ -1,17 +1,3 @@
-/**
- * QUEUE CONTROLLER
- * ================
- * HTTP endpoints for queue operations:
- * - Retrieve current queue for a doctor/date
- * - Mark patient as arrived (reception)
- * - Call next patient (doctor assistant)
- * - Start/complete consultation (doctor assistant)
- * - Pause/resume queue (admin)
- * - Get queue statistics
- *
- * All operations trigger recalculation and broadcast via Socket.IO.
- */
-
 const Queue = require('./queue.model');
 const Appointment = require('../appointments/appointments.model');
 const QueueService = require('./queue.service');
@@ -21,33 +7,22 @@ const ApiError = require('../../errors/ApiError');
 const withTransaction = require('../../utils/withTransaction.util');
 const { broadcastQueueRecalculation, notifyPatientCalled } = require('../../sockets/socketEmitter');
 const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
-const { QUEUE_ENTRY_STATUS } = require('../../constants/enums');
+const { QUEUE_ENTRY_STATUS, APPOINTMENT_STATUS } = require('../../constants/enums');
 
-// =====================================================================
-// GET QUEUE
-// =====================================================================
-
-/**
- * Get the current queue for a doctor/date with all entries
- * Used by: Reception panel, Doctor assistant, Admin dashboard, Patient portal
- *
- * SECURITY: Patients only receive their own queue entry and public queue info.
- * Staff receive full queue details only if authorized.
- */
 const getQueue = async (req, res) => {
   try {
     const { doctorId, date } = req.params;
     const parsedDate = normalizeDateOnly(new Date(date));
 
-    const queue = await Queue.findOne({ doctor: doctorId, date: parsedDate })
-      .populate([
-        { path: 'doctor', select: 'user', populate: { path: 'user', select: 'fullName' } },
-        { path: 'hospital', select: 'name' },
-        { path: 'department', select: 'name' },
-      ]);
+    await QueueScheduler.recalculateQueue(doctorId, parsedDate);
+
+    const queue = await Queue.findOne({ doctor: doctorId, date: parsedDate }).populate([
+      { path: 'doctor', select: 'user', populate: { path: 'user', select: 'fullName' } },
+      { path: 'hospital', select: 'name' },
+      { path: 'department', select: 'name' },
+    ]);
 
     if (!queue) {
-      // No queue yet — return empty but valid structure
       return res.status(200).json({
         _id: null,
         doctor: doctorId,
@@ -57,17 +32,15 @@ const getQueue = async (req, res) => {
         entries: [],
         status: 'active',
         averageConsultationMinutes: 15,
+        queueVersion: 1,
       });
     }
 
-    // SECURITY: Filter queue data based on user role
     if (req.user.role === 'patient') {
-      // Patients see only their own entry + public queue progress
       const patientId = req.user._id.toString();
-      const patientEntry = queue.entries.find(e => e.patient.toString() === patientId);
+      const patientEntry = queue.entries.find((e) => e.patient.toString() === patientId);
 
       if (!patientEntry) {
-        // Patient has no entry in this queue — return empty/generic response
         return res.status(200).json({
           _id: queue._id,
           doctor: { user: { fullName: queue.doctor?.user?.fullName || 'Doctor' } },
@@ -77,10 +50,11 @@ const getQueue = async (req, res) => {
           entries: [],
           status: queue.status,
           averageConsultationMinutes: queue.averageConsultationMinutes,
+          queueVersion: queue.queueVersion,
+          timingSummary: queue.timingSummary,
         });
       }
 
-      // Return only patient's own entry + aggregate queue stats
       return res.status(200).json({
         _id: queue._id,
         doctor: { user: { fullName: queue.doctor?.user?.fullName || 'Doctor' } },
@@ -89,141 +63,131 @@ const getQueue = async (req, res) => {
         totalTokensIssued: queue.totalTokensIssued,
         status: queue.status,
         averageConsultationMinutes: queue.averageConsultationMinutes,
-        // Only patient's own entry, with no other patient identifiers
+        queueVersion: queue.queueVersion,
+        timingSummary: queue.timingSummary,
         entries: [
           {
             _id: patientEntry._id,
             tokenNumber: patientEntry.tokenNumber,
             status: patientEntry.status,
+            arrivalStatus: patientEntry.arrivalStatus,
+            scheduledStartTime: patientEntry.scheduledStartTime,
+            scheduledEndTime: patientEntry.scheduledEndTime,
             estimatedConsultationStartTime: patientEntry.estimatedConsultationStartTime,
             estimatedConsultationEndTime: patientEntry.estimatedConsultationEndTime,
+            recommendedArrivalTime: patientEntry.recommendedArrivalTime,
             queuePosition: patientEntry.queuePosition,
+            timingStatus: patientEntry.timingStatus,
+            delayMinutes: patientEntry.delayMinutes,
+            aheadMinutes: patientEntry.aheadMinutes,
+            statusLabel: patientEntry.statusLabel,
+            statusMessage: patientEntry.statusMessage,
+            recommendedAction: patientEntry.recommendedAction,
             appointment: patientEntry.appointment,
           },
         ],
       });
     }
 
-    // Staff and admin receive full queue data
     res.status(200).json(queue);
   } catch (error) {
-    console.error('[QUEUE] Error fetching queue:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// MARK PATIENT ARRIVED (Reception)
-// =====================================================================
-
-/**
- * Reception marks a patient as arrived (within or after the 5-minute window).
- * This cancels the attendance timeout for this patient and transitions from
- * PENDING (if marked) back to WAITING/CALLED. Subsequent recalculations
- * will account for the patient now being present.
- */
 const markPatientArrived = async (req, res) => {
   try {
     const { queueId, entryId } = req.params;
-    const { receptionistId } = req.body;
+    const receptionistId = req.body.receptionistId || req.user?._id;
 
-    return withTransaction(async (session) => {
-      // Mark patient as arrived
-      const { entry, appointment, arrivalStatus } = await AttendanceTimeoutService.markArrived(
+    const result = await withTransaction(async (session) => {
+      const queue = await Queue.findById(queueId).session(session);
+      if (!queue) throw new ApiError(404, 'Queue not found');
+      const entry = queue.entries.id(entryId);
+      if (!entry) throw new ApiError(404, 'Queue entry not found');
+
+      const { arrivalStatus } = await AttendanceTimeoutService.markArrived(
         queueId,
-        null, // appointmentId not needed for queue update
+        entry.appointment,
         entryId,
-        false, // isLate — determined by AttendanceTimeoutService
+        false,
         receptionistId,
         session
       );
 
-      // Recalculate queue (no delay cascading for arrival alone)
       const recalculatedQueue = await QueueScheduler.recalculateQueue(
-        entry.doctor || appointment.doctor,
-        appointment.appointmentDate,
+        queue.doctor,
+        queue.date,
         session
       );
 
-      // Broadcast updates
-      broadcastQueueRecalculation({
-        doctorId: recalculatedQueue.doctor,
-        date: recalculatedQueue.date,
-        queue: recalculatedQueue,
-      });
+      return { entry, arrivalStatus, recalculatedQueue };
+    });
 
-      return res.status(200).json({
-        message: `Patient marked as ${arrivalStatus}`,
-        entry,
-        arrivalStatus,
-      });
+    broadcastQueueRecalculation({
+      doctorId: result.recalculatedQueue.doctor,
+      date: result.recalculatedQueue.date,
+      queue: result.recalculatedQueue,
+    });
+
+    return res.status(200).json({
+      message: `Patient marked as ${result.arrivalStatus}`,
+      entry: result.entry,
+      arrivalStatus: result.arrivalStatus,
     });
   } catch (error) {
-    console.error('[QUEUE] Error marking patient arrived:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// CALL NEXT PATIENT (Doctor Assistant)
-// =====================================================================
-
-/**
- * Doctor assistant calls the next patient in the queue.
- * This transitions the patient from WAITING → CALLED and increments currentTokenNumber.
- */
 const callNextPatient = async (req, res) => {
   try {
     const { queueId } = req.params;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const queue = await Queue.findById(queueId).session(session);
       if (!queue) {
         throw new ApiError(404, 'Queue not found');
       }
 
-      const calledEntry = QueueService.callNext(queue);
+      const calledEntry = await QueueService.callNext(queue, session);
       await queue.save({ session });
 
-      // Notify patient they've been called
-      notifyPatientCalled({
-        patientId: calledEntry.patient,
-        appointmentId: calledEntry.appointment,
-        tokenNumber: calledEntry.tokenNumber,
-      });
+      const recalculatedQueue = await QueueScheduler.recalculateQueue(
+        queue.doctor,
+        queue.date,
+        session
+      );
 
-      // Broadcast queue update (currentTokenNumber changed)
-      broadcastQueueRecalculation({
-        doctorId: queue.doctor,
-        date: queue.date,
-        queue,
-      });
+      return { calledEntry, recalculatedQueue };
+    });
 
-      return res.status(200).json({
-        message: `Patient #${calledEntry.tokenNumber} called`,
-        entry: calledEntry,
-      });
+    notifyPatientCalled({
+      patientId: result.calledEntry.patient,
+      appointmentId: result.calledEntry.appointment,
+      tokenNumber: result.calledEntry.tokenNumber,
+    });
+
+    broadcastQueueRecalculation({
+      doctorId: result.recalculatedQueue.doctor,
+      date: result.recalculatedQueue.date,
+      queue: result.recalculatedQueue,
+    });
+
+    return res.status(200).json({
+      message: `Patient #${result.calledEntry.tokenNumber} called`,
+      entry: result.calledEntry,
     });
   } catch (error) {
-    console.error('[QUEUE] Error calling next patient:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// START CONSULTATION (Doctor)
-// =====================================================================
-
-/**
- * Doctor marks consultation as started.
- * Records actual start time — if different from scheduled, this cascades
- * delay to future patients on next recalculation.
- */
 const startConsultation = async (req, res) => {
   try {
     const { queueId, entryId } = req.params;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const queue = await Queue.findById(queueId).session(session);
       if (!queue) {
         throw new ApiError(404, 'Queue not found');
@@ -234,79 +198,85 @@ const startConsultation = async (req, res) => {
         throw new ApiError(404, 'Queue entry not found');
       }
 
-      // Record actual start
       await QueueScheduler.recordConsultationStart(queueId, entryId, session);
+      await Appointment.findByIdAndUpdate(
+        entry.appointment,
+        {
+          status: APPOINTMENT_STATUS.IN_CONSULTATION,
+          actualConsultationStartedAt: getHospitalNow(),
+        },
+        { session }
+      );
       const updated = await Queue.findById(queueId).session(session);
 
-      // No broadcast needed yet — patient is now "in consultation" but future queue unchanged
-      return res.status(200).json({
-        message: 'Consultation started',
-        entry: updated.entries.id(entryId),
-      });
+      return { updated, entry: updated.entries.id(entryId) };
+    });
+
+    broadcastQueueRecalculation({
+      doctorId: result.updated.doctor,
+      date: result.updated.date,
+      queue: result.updated,
+    });
+
+    return res.status(200).json({
+      message: 'Consultation started',
+      entry: result.entry,
     });
   } catch (error) {
-    console.error('[QUEUE] Error starting consultation:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// COMPLETE CONSULTATION (Doctor)
-// =====================================================================
-
-/**
- * Doctor marks consultation as completed.
- * Records actual end time, updates average, and recalculates future queue.
- * This is where delays (if consultation took longer) or early completions
- * (if faster) cascade to all waiting patients.
- */
 const completeConsultation = async (req, res) => {
   try {
     const { queueId, entryId } = req.params;
     const { doctorId, appointmentDate } = req.body;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const { entry, recalculatedQueue } = await QueueScheduler.recordConsultationCompletion(
         queueId,
         entryId,
         doctorId,
-        new Date(appointmentDate),
+        appointmentDate ? new Date(appointmentDate) : undefined,
         session
       );
 
-      // Broadcast updated queue with recalculated future times
-      broadcastQueueRecalculation({
-        doctorId,
-        date: appointmentDate,
-        queue: recalculatedQueue,
-      });
+      await Appointment.findByIdAndUpdate(
+        entry.appointment,
+        {
+          status: APPOINTMENT_STATUS.COMPLETED,
+          actualConsultationCompletedAt: entry.actualEndDateTime,
+          actualConsultationDurationMinutes: entry.actualDurationMinutes,
+          isInDoctorQueue: false,
+        },
+        { session }
+      );
 
-      return res.status(200).json({
-        message: 'Consultation completed',
-        entry,
-        newAverageMinutes: recalculatedQueue.averageConsultationMinutes,
-      });
+      return { entry, recalculatedQueue };
+    });
+
+    broadcastQueueRecalculation({
+      doctorId: result.recalculatedQueue.doctor,
+      date: result.recalculatedQueue.date,
+      queue: result.recalculatedQueue,
+    });
+
+    return res.status(200).json({
+      message: 'Consultation completed',
+      entry: result.entry,
+      newAverageMinutes: result.recalculatedQueue.averageConsultationMinutes,
     });
   } catch (error) {
-    console.error('[QUEUE] Error completing consultation:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// SKIP PATIENT (Doctor Assistant)
-// =====================================================================
-
-/**
- * Doctor skips a patient (e.g., doesn't show, needs to be rescheduled).
- * Removes them from queue, recalculates remaining queue.
- */
 const skipPatient = async (req, res) => {
   try {
     const { queueId, entryId } = req.params;
     const { doctorId, appointmentDate } = req.body;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const queue = await Queue.findById(queueId).session(session);
       if (!queue) {
         throw new ApiError(404, 'Queue not found');
@@ -320,33 +290,29 @@ const skipPatient = async (req, res) => {
       QueueService.skipPatient(entry);
       await queue.save({ session });
 
-      // Recalculate queue — moving everyone behind this patient up
       const recalculatedQueue = await QueueScheduler.recalculateQueue(
-        doctorId,
-        new Date(appointmentDate),
+        doctorId || queue.doctor,
+        appointmentDate ? new Date(appointmentDate) : queue.date,
         session
       );
 
-      broadcastQueueRecalculation({
-        doctorId,
-        date: appointmentDate,
-        queue: recalculatedQueue,
-      });
+      return { entry, recalculatedQueue };
+    });
 
-      return res.status(200).json({
-        message: 'Patient skipped',
-        entry,
-      });
+    broadcastQueueRecalculation({
+      doctorId: result.recalculatedQueue.doctor,
+      date: result.recalculatedQueue.date,
+      queue: result.recalculatedQueue,
+    });
+
+    return res.status(200).json({
+      message: 'Patient skipped',
+      entry: result.entry,
     });
   } catch (error) {
-    console.error('[QUEUE] Error skipping patient:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
-
-// =====================================================================
-// PAUSE/RESUME QUEUE (Admin)
-// =====================================================================
 
 const pauseQueue = async (req, res) => {
   try {
@@ -368,7 +334,6 @@ const pauseQueue = async (req, res) => {
 
     res.status(200).json({ message: 'Queue paused', status: queue.status });
   } catch (error) {
-    console.error('[QUEUE] Error pausing queue:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
@@ -385,26 +350,20 @@ const resumeQueue = async (req, res) => {
     QueueService.resume(queue);
     await queue.save();
 
+    const recalculated = await QueueScheduler.recalculateQueue(queue.doctor, queue.date);
+
     broadcastQueueRecalculation({
       doctorId: queue.doctor,
       date: queue.date,
-      queue,
+      queue: recalculated || queue,
     });
 
     res.status(200).json({ message: 'Queue resumed', status: queue.status });
   } catch (error) {
-    console.error('[QUEUE] Error resuming queue:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
-// =====================================================================
-// QUEUE STATISTICS
-// =====================================================================
-
-/**
- * Get queue statistics: avg wait time, completed, currently consulting, etc.
- */
 const getQueueStats = async (req, res) => {
   try {
     const { queueId } = req.params;
@@ -414,9 +373,9 @@ const getQueueStats = async (req, res) => {
       throw new ApiError(404, 'Queue not found');
     }
 
-    const waiting = queue.entries.filter(e => e.status === QUEUE_ENTRY_STATUS.WAITING);
-    const completed = queue.entries.filter(e => e.status === QUEUE_ENTRY_STATUS.COMPLETED);
-    const consulting = queue.entries.find(e => e.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION);
+    const waiting = queue.entries.filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING);
+    const completed = queue.entries.filter((e) => e.status === QUEUE_ENTRY_STATUS.COMPLETED);
+    const consulting = queue.entries.find((e) => e.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION);
 
     const stats = {
       totalIssued: queue.totalTokensIssued,
@@ -427,11 +386,12 @@ const getQueueStats = async (req, res) => {
       isConsultationActive: !!consulting,
       consultingTokenNumber: consulting?.tokenNumber || null,
       queueStatus: queue.status,
+      queueVersion: queue.queueVersion,
+      timingSummary: queue.timingSummary,
     };
 
     res.status(200).json(stats);
   } catch (error) {
-    console.error('[QUEUE] Error fetching queue stats:', error);
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 };

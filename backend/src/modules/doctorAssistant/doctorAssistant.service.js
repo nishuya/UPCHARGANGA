@@ -2,6 +2,7 @@ const Doctor = require('../doctors/doctors.model');
 const Appointment = require('../appointments/appointments.model');
 const Queue = require('../queue/queue.model');
 const QueueService = require('../queue/queue.service');
+const QueueScheduler = require('../queue/queue.scheduler.service');
 const ApiError = require('../../errors/ApiError');
 const withTransaction = require('../../utils/withTransaction.util');
 const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
@@ -9,18 +10,10 @@ const {
   notifyPatientCalled,
   broadcastQueueUpdate,
   broadcastQueueRecalculation,
+  emitToHospital,
 } = require('../../sockets/socketEmitter');
 const { APPOINTMENT_STATUS, QUEUE_ENTRY_STATUS } = require('../../constants/enums');
 
-/**
- * Confirms the doctor exists, is active, belongs to the SAME hospital as
- * the requesting Doctor Assistant, AND — if this assistant has been
- * scoped to one specific doctor via `assignedDoctor` (see
- * staff.service.js) — that this IS that doctor. An assistant may only
- * operate on queues within their own hospital, narrowed further to their
- * one assigned doctor when set. This is PANEL-2-SPECIFIC access control,
- * which is why it lives here rather than in QueueService.
- */
 const resolveDoctorAndDate = async (
   doctorId,
   dateInput,
@@ -34,7 +27,10 @@ const resolveDoctorAndDate = async (
   if (!requesterHospitalId || doctor.hospital.toString() !== requesterHospitalId.toString()) {
     throw new ApiError(403, "You are not authorized to manage this doctor's queue.");
   }
-  if (requesterAssignedDoctorId && doctor._id.toString() !== requesterAssignedDoctorId.toString()) {
+  if (
+    requesterAssignedDoctorId &&
+    doctor._id.toString() !== requesterAssignedDoctorId.toString()
+  ) {
     throw new ApiError(403, "You are only authorized to manage your assigned doctor's queue.");
   }
 
@@ -86,9 +82,15 @@ const getQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssig
     requesterAssignedDoctorId
   );
 
+  // Recalculate so estimates and delay/ahead status reflect current server clock
+  await QueueScheduler.recalculateQueue(doctor._id, normalizedDate);
+
   const queue = await Queue.findOne({ doctor: doctor._id, date: normalizedDate })
     .populate('entries.patient', 'fullName phone')
-    .populate('entries.appointment', 'bookingNumber tokenNumber status isInDoctorQueue reasonForVisit symptoms');
+    .populate(
+      'entries.appointment',
+      'bookingNumber tokenNumber status isInDoctorQueue reasonForVisit symptoms timeSlot'
+    );
 
   if (!queue) {
     return {
@@ -96,29 +98,31 @@ const getQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssig
       currentTokenNumber: 0,
       totalTokensIssued: 0,
       averageConsultationMinutes: null,
+      queueVersion: 1,
+      timingSummary: null,
       currentPatient: null,
       waitingList: [],
+      allWaitingEntries: [],
+      totalCompleted: 0,
     };
   }
 
-  // Only entries Reception has explicitly released are shown as callable
-  // context — a patient who hasn't been released isn't "in the room" yet.
   const releasedEntries = queue.entries.filter((e) => e.appointment?.isInDoctorQueue);
 
   const currentPatient =
-    releasedEntries.find((e) =>
+    queue.entries.find((e) =>
       [QUEUE_ENTRY_STATUS.CALLED, QUEUE_ENTRY_STATUS.IN_CONSULTATION].includes(e.status)
     ) || null;
 
-  // queuePosition/estimatedReportingTime/estimatedWaitingMinutes are read
-  // straight off the persisted entry — computed and kept fresh by
-  // QueueService.recalculateQueue, not recomputed here.
   const waitingList = releasedEntries
     .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING)
-    .sort((a, b) => a.tokenNumber - b.tokenNumber);
+    .sort((a, b) => (a.queuePosition || a.tokenNumber) - (b.queuePosition || b.tokenNumber));
 
-  // Count completed and skipped patients
-  const totalCompleted = releasedEntries.filter(
+  const allWaitingEntries = queue.entries
+    .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING)
+    .sort((a, b) => (a.queuePosition || a.tokenNumber) - (b.queuePosition || b.tokenNumber));
+
+  const totalCompleted = queue.entries.filter(
     (e) => e.status === QUEUE_ENTRY_STATUS.COMPLETED
   ).length;
 
@@ -127,8 +131,11 @@ const getQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssig
     currentTokenNumber: queue.currentTokenNumber,
     totalTokensIssued: queue.totalTokensIssued,
     averageConsultationMinutes: queue.averageConsultationMinutes,
+    queueVersion: queue.queueVersion,
+    timingSummary: queue.timingSummary,
     currentPatient,
     waitingList,
+    allWaitingEntries,
     totalCompleted,
   };
 };
@@ -136,7 +143,12 @@ const getQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssig
 // ---------------------------------------------------------------------
 // 2. Call Next Patient
 // ---------------------------------------------------------------------
-const callNextPatient = async (doctorId, dateInput, requesterHospitalId, requesterAssignedDoctorId) => {
+const callNextPatient = async (
+  doctorId,
+  dateInput,
+  requesterHospitalId,
+  requesterAssignedDoctorId
+) => {
   const { doctor, normalizedDate } = await resolveDoctorAndDate(
     doctorId,
     dateInput,
@@ -144,107 +156,103 @@ const callNextPatient = async (doctorId, dateInput, requesterHospitalId, request
     requesterAssignedDoctorId
   );
 
-  const queue = await Queue.findOne({ doctor: doctor._id, date: normalizedDate });
-  if (!queue) {
-    throw new ApiError(404, 'No queue exists yet for this doctor on this date.');
-  }
+  const result = await withTransaction(async (session) => {
+    const queue = await Queue.findOne({ doctor: doctor._id, date: normalizedDate }).session(
+      session
+    );
+    if (!queue) {
+      throw new ApiError(404, 'No queue exists yet for this doctor on this date.');
+    }
 
-  const calledEntry = await QueueService.callNext(queue);
-  await queue.save();
+    const calledEntry = await QueueService.callNext(queue, session);
+    await queue.save({ session });
 
-  // The called entry leaves the WAITING pool (waiting -> called), so
-  // everyone still behind them moves up one position — recalculate before
-  // broadcasting, same as every other event that changes queue composition.
-  const recalculatedQueue = await QueueService.recalculateQueue(doctor._id, normalizedDate);
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(
+      doctor._id,
+      normalizedDate,
+      session
+    );
 
-  // Two distinct events, deliberately: a personal notification to the ONE
-  // patient being called, and a shared broadcast to everyone else still
-  // watching this queue. Different rooms, different audiences — not a
-  // duplicate of each other.
+    return { calledEntry, recalculatedQueue };
+  });
+
   notifyPatientCalled({
-    patientId: calledEntry.patient,
-    appointmentId: calledEntry.appointment,
-    tokenNumber: calledEntry.tokenNumber,
+    patientId: result.calledEntry.patient,
+    appointmentId: result.calledEntry.appointment,
+    tokenNumber: result.calledEntry.tokenNumber,
   });
   broadcastQueueRecalculation({
     doctorId: doctor._id,
     date: normalizedDate,
-    queue: recalculatedQueue,
+    queue: result.recalculatedQueue,
   });
 
-  return { calledEntry, queue: recalculatedQueue || queue };
+  return { calledEntry: result.calledEntry, queue: result.recalculatedQueue };
 };
 
 // ---------------------------------------------------------------------
 // 3. Start Consultation
 // ---------------------------------------------------------------------
-const startConsultation = async (appointmentId, requesterHospitalId, requesterAssignedDoctorId) => {
-  console.log('🔄 [START] Service called for appointmentId:', appointmentId);
-  try {
-    const { appointment, queue } = await loadAppointmentAndQueue(
-      appointmentId,
-      requesterHospitalId,
-      requesterAssignedDoctorId
+const startConsultation = async (
+  appointmentId,
+  requesterHospitalId,
+  requesterAssignedDoctorId
+) => {
+  const { appointment, queue } = await loadAppointmentAndQueue(
+    appointmentId,
+    requesterHospitalId,
+    requesterAssignedDoctorId
+  );
+  const entry = QueueService.findEntry(queue, appointmentId);
+
+  const validStatuses = [APPOINTMENT_STATUS.CONFIRMED, APPOINTMENT_STATUS.CHECKED_IN];
+  if (!validStatuses.includes(appointment.status)) {
+    throw new ApiError(
+      400,
+      `Cannot start consultation — appointment status is "${appointment.status}".`
     );
-    console.log('✅ [START] Appointment and queue loaded');
-    const entry = QueueService.findEntry(queue, appointmentId);
-    console.log('✅ [START] Entry found in queue');
-
-    console.log('🔄 [START] Starting consultation for appointment:', appointmentId);
-    console.log('📊 [START] Current appointment status:', appointment.status);
-
-    // Allow starting consultation from CONFIRMED or CHECKED_IN status
-    const validStatuses = [APPOINTMENT_STATUS.CONFIRMED, APPOINTMENT_STATUS.CHECKED_IN];
-    if (!validStatuses.includes(appointment.status)) {
-      console.error('❌ [START] Invalid status for starting consultation:', appointment.status);
-      throw new ApiError(400, `Cannot start consultation — appointment status is "${appointment.status}".`);
-    }
-
-    console.log('✅ [START] Status is valid, proceeding with consultation');
-
-    QueueService.startConsultation(entry); // mutates entry in place, throws on invalid transition
-    console.log('✅ [START] QueueService.startConsultation completed');
-
-    const result = await withTransaction(async (session) => {
-      console.log('🔄 [START] Inside transaction - saving queue');
-      await queue.save({ session });
-      appointment.status = APPOINTMENT_STATUS.IN_CONSULTATION;
-      await appointment.save({ session });
-      console.log('✅ [START] Appointment status saved as IN_CONSULTATION');
-
-      // CRITICAL FIX: Recalculate queue — moving a patient to IN_CONSULTATION
-      // changes the position/ETA of all downstream waiting patients
-      const recalculatedQueue = await QueueService.recalculateQueue(
-        appointment.doctor._id || appointment.doctor,
-        appointment.appointmentDate,
-        session
-      );
-      console.log('✅ [START] Queue recalculated');
-
-      return { appointment, entry, recalculatedQueue };
-    });
-
-    // Broadcast AFTER transaction commits — notifies all clients that
-    // a patient started consultation and queue positions/ETAs shifted
-    console.log('🔄 [START] Broadcasting queue recalculation');
-    broadcastQueueRecalculation({
-      doctorId: appointment.doctor._id || appointment.doctor,
-      date: appointment.appointmentDate,
-      queue: result.recalculatedQueue,
-    });
-
-    console.log('✅ [START] Service completed successfully');
-    return { appointment: result.appointment, entry: result.entry };
-  } catch (err) {
-    console.error('❌ [START] Service error:', err.message);
-    throw err;
   }
+
+  const now = getHospitalNow();
+  QueueService.startConsultation(entry, now);
+  queue.currentTokenNumber = entry.tokenNumber;
+
+  const result = await withTransaction(async (session) => {
+    await queue.save({ session });
+    appointment.status = APPOINTMENT_STATUS.IN_CONSULTATION;
+    appointment.actualConsultationStartedAt = now;
+    await appointment.save({ session });
+
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(
+      appointment.doctor._id || appointment.doctor,
+      appointment.appointmentDate,
+      session
+    );
+
+    const updatedEntry = recalculatedQueue.entries.find(
+      (e) => e.appointment.toString() === appointment._id.toString()
+    );
+
+    return { appointment, entry: updatedEntry || entry, recalculatedQueue };
+  });
+
+  broadcastQueueRecalculation({
+    doctorId: appointment.doctor._id || appointment.doctor,
+    date: appointment.appointmentDate,
+    queue: result.recalculatedQueue,
+  });
+
+  return { appointment: result.appointment, entry: result.entry, queue: result.recalculatedQueue };
 };
 
 // ---------------------------------------------------------------------
 // 4. Complete Consultation
 // ---------------------------------------------------------------------
-const completeConsultation = async (appointmentId, requesterHospitalId, requesterAssignedDoctorId) => {
+const completeConsultation = async (
+  appointmentId,
+  requesterHospitalId,
+  requesterAssignedDoctorId
+) => {
   const { appointment, queue } = await loadAppointmentAndQueue(
     appointmentId,
     requesterHospitalId,
@@ -253,29 +261,36 @@ const completeConsultation = async (appointmentId, requesterHospitalId, requeste
   const entry = QueueService.findEntry(queue, appointmentId);
   const doctorId = appointment.doctor._id || appointment.doctor;
 
-  const { actualMinutes } = QueueService.completeConsultation(queue, entry);
+  const now = getHospitalNow();
+  const { actualMinutes } = QueueService.completeConsultation(queue, entry, now);
 
   const result = await withTransaction(async (session) => {
     await queue.save({ session });
 
     appointment.status = APPOINTMENT_STATUS.COMPLETED;
+    appointment.actualConsultationCompletedAt = now;
+    appointment.actualConsultationDurationMinutes = actualMinutes;
+    appointment.isInDoctorQueue = false;
     await appointment.save({ session });
 
-    // THE required behavior: recalculate every remaining waiting
-    // patient's position/ETA/wait-time now that one fewer person is
-    // ahead of them and the average consultation time has just adjusted.
-    const recalculatedQueue = await QueueService.recalculateQueue(
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(
       doctorId,
       appointment.appointmentDate,
       session
     );
 
-    return { appointment, entry, actualMinutes, recalculatedQueue };
+    const updatedEntry = recalculatedQueue.entries.find(
+      (e) => e.appointment.toString() === appointment._id.toString()
+    );
+
+    return {
+      appointment,
+      entry: updatedEntry || entry,
+      actualMinutes,
+      recalculatedQueue,
+    };
   });
 
-  // Broadcast only AFTER the transaction has committed — never from
-  // inside the callback, where a later error in the same transaction
-  // could still roll back the very change we just announced.
   broadcastQueueRecalculation({
     doctorId,
     date: appointment.appointmentDate,
@@ -287,6 +302,7 @@ const completeConsultation = async (appointmentId, requesterHospitalId, requeste
     entry: result.entry,
     actualMinutes: result.actualMinutes,
     averageConsultationMinutes: result.recalculatedQueue?.averageConsultationMinutes,
+    queue: result.recalculatedQueue,
   };
 };
 
@@ -302,26 +318,44 @@ const skipPatient = async (appointmentId, requesterHospitalId, requesterAssigned
   const entry = QueueService.findEntry(queue, appointmentId);
   const doctorId = appointment.doctor._id || appointment.doctor;
 
-  QueueService.skipPatient(entry);
-  await queue.save();
+  const result = await withTransaction(async (session) => {
+    QueueService.skipPatient(entry);
+    await queue.save({ session });
 
-  // Skipping also removes this patient from the waiting pool — everyone
-  // still behind them moves up one position.
-  const recalculatedQueue = await QueueService.recalculateQueue(doctorId, appointment.appointmentDate);
+    appointment.isInDoctorQueue = false;
+    await appointment.save({ session });
+
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(
+      doctorId,
+      appointment.appointmentDate,
+      session
+    );
+
+    const updatedEntry = recalculatedQueue.entries.find(
+      (e) => e.appointment.toString() === appointment._id.toString()
+    );
+
+    return { entry: updatedEntry || entry, recalculatedQueue };
+  });
 
   broadcastQueueRecalculation({
     doctorId,
     date: appointment.appointmentDate,
-    queue: recalculatedQueue,
+    queue: result.recalculatedQueue,
   });
 
-  return { entry, queue: recalculatedQueue || queue };
+  return { entry: result.entry, queue: result.recalculatedQueue };
 };
 
 // ---------------------------------------------------------------------
 // 6. Pause Queue
 // ---------------------------------------------------------------------
-const pauseQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssignedDoctorId) => {
+const pauseQueue = async (
+  doctorId,
+  dateInput,
+  requesterHospitalId,
+  requesterAssignedDoctorId
+) => {
   const { doctor, normalizedDate } = await resolveDoctorAndDate(
     doctorId,
     dateInput,
@@ -337,8 +371,6 @@ const pauseQueue = async (doctorId, dateInput, requesterHospitalId, requesterAss
   QueueService.pause(queue);
   await queue.save();
 
-  // Status-only change — nobody's position or ETA moved, so the lighter
-  // broadcast (no per-patient ETA push) is the correct one here.
   broadcastQueueUpdate({ doctorId: doctor._id, date: normalizedDate, queue });
 
   return queue;
@@ -347,7 +379,12 @@ const pauseQueue = async (doctorId, dateInput, requesterHospitalId, requesterAss
 // ---------------------------------------------------------------------
 // 7. Resume Queue
 // ---------------------------------------------------------------------
-const resumeQueue = async (doctorId, dateInput, requesterHospitalId, requesterAssignedDoctorId) => {
+const resumeQueue = async (
+  doctorId,
+  dateInput,
+  requesterHospitalId,
+  requesterAssignedDoctorId
+) => {
   const { doctor, normalizedDate } = await resolveDoctorAndDate(
     doctorId,
     dateInput,
@@ -363,16 +400,18 @@ const resumeQueue = async (doctorId, dateInput, requesterHospitalId, requesterAs
   QueueService.resume(queue);
   await queue.save();
 
-  broadcastQueueUpdate({ doctorId: doctor._id, date: normalizedDate, queue });
+  const recalculatedQueue = await QueueScheduler.recalculateQueue(doctor._id, normalizedDate);
+  broadcastQueueRecalculation({
+    doctorId: doctor._id,
+    date: normalizedDate,
+    queue: recalculatedQueue || queue,
+  });
 
-  return queue;
+  return recalculatedQueue || queue;
 };
 
 // ---------------------------------------------------------------------
-// Bonus: configure average consultation time (satisfies "Average
-// consultation time is configurable" as an explicit, settable value —
-// not just the automatic per-completion adjustment). Changes every
-// remaining patient's ETA, so it gets the full recalculation broadcast.
+// Configure average consultation time
 // ---------------------------------------------------------------------
 const setAverageConsultationMinutes = async (
   doctorId,
@@ -404,18 +443,84 @@ const setAverageConsultationMinutes = async (
 };
 
 // ---------------------------------------------------------------------
-// 8. Doctor Assistant Unavailability Management
-// Doctor assistants can mark their assigned doctor as unavailable
-// Supports single day, multiple days, or custom date ranges
+// Cascade cancel helper when doctor is marked unavailable
 // ---------------------------------------------------------------------
+const cascadeDoctorUnavailability = async (doctor, startDate, endDate, reason) => {
+  const normStart = normalizeDateOnly(startDate);
+  const normEnd = normalizeDateOnly(endDate);
+  const now = getHospitalNow();
 
-/**
- * Create unavailability period for assigned doctor
- * Supports:
- * - Single day: startDate = endDate
- * - Multiple days: endDate > startDate
- * - Custom ranges with reasons (vacation, conference, emergency, other)
- */
+  const appointmentsToCancel = await Appointment.find({
+    doctor: doctor._id,
+    appointmentDate: { $gte: normStart, $lte: normEnd },
+    status: {
+      $in: [
+        APPOINTMENT_STATUS.PENDING,
+        APPOINTMENT_STATUS.CONFIRMED,
+        APPOINTMENT_STATUS.CHECKED_IN,
+      ],
+    },
+    isActive: true,
+  });
+
+  const affectedDates = new Set();
+
+  for (const apt of appointmentsToCancel) {
+    apt.status = APPOINTMENT_STATUS.CANCELLED;
+    apt.cancellationReason = 'DOCTOR_UNAVAILABLE';
+    apt.cancelledAt = now;
+    apt.isInDoctorQueue = false;
+    apt.queuePosition = null;
+    apt.estimatedConsultationStartTime = null;
+    apt.estimatedConsultationEndTime = null;
+    apt.recommendedArrivalTime = null;
+    apt.timingStatus = 'doctor-unavailable';
+    apt.statusLabel = 'Doctor Unavailable';
+    await apt.save();
+
+    await Queue.updateOne(
+      { doctor: doctor._id, date: apt.appointmentDate },
+      {
+        $set: {
+          'entries.$[elem].status': QUEUE_ENTRY_STATUS.SKIPPED,
+          'entries.$[elem].delayReason': 'doctor-unavailable',
+          'entries.$[elem].queuePosition': null,
+          'entries.$[elem].estimatedConsultationStartTime': null,
+          'entries.$[elem].estimatedConsultationEndTime': null,
+        },
+      },
+      { arrayFilters: [{ 'elem.appointment': apt._id }] }
+    );
+
+    affectedDates.add(apt.appointmentDate.toISOString());
+  }
+
+  for (const isoDate of affectedDates) {
+    const d = new Date(isoDate);
+    const recalculated = await QueueScheduler.recalculateQueue(doctor._id, d);
+    if (recalculated) {
+      broadcastQueueRecalculation({
+        doctorId: doctor._id,
+        date: d,
+        queue: recalculated,
+      });
+    }
+  }
+
+  emitToHospital(doctor.hospital, 'doctor:unavailability-created', {
+    doctorId: doctor._id,
+    startDate: normStart,
+    endDate: normEnd,
+    reason,
+    cancelledCount: appointmentsToCancel.length,
+  });
+
+  return appointmentsToCancel.length;
+};
+
+// ---------------------------------------------------------------------
+// 8. Doctor Assistant Unavailability Management
+// ---------------------------------------------------------------------
 const createUnavailability = async (
   doctorId,
   startDate,
@@ -438,7 +543,6 @@ const createUnavailability = async (
     throw new ApiError(403, 'You can only manage doctors in your hospital.');
   }
 
-  // Validate dates
   const start = new Date(startDate);
   const end = new Date(endDate);
 
@@ -446,11 +550,10 @@ const createUnavailability = async (
     throw new ApiError(400, 'Start date must be before or equal to end date.');
   }
 
-  if (start < getHospitalNow()) {
+  if (normalizeDateOnly(start) < normalizeDateOnly(getHospitalNow())) {
     throw new ApiError(400, 'Cannot create unavailability for past dates.');
   }
 
-  // Add unavailability period to doctor
   const unavailability = {
     startDate: start,
     endDate: end,
@@ -463,19 +566,19 @@ const createUnavailability = async (
   doctor.unavailability.push(unavailability);
   await doctor.save();
 
+  await cascadeDoctorUnavailability(doctor, start, end, reason);
+
   return doctor.unavailability[doctor.unavailability.length - 1];
 };
 
-/**
- * Get all unavailability periods for assigned doctor
- */
 const getUnavailability = async (doctorId, requesterHospitalId) => {
   if (!doctorId) {
     throw new ApiError(400, 'Doctor ID is required.');
   }
 
-  const doctor = await Doctor.findOne({ _id: doctorId, isActive: true })
-    .select('unavailability');
+  const doctor = await Doctor.findOne({ _id: doctorId, isActive: true }).select(
+    'unavailability hospital'
+  );
 
   if (!doctor) {
     throw new ApiError(404, 'Doctor not found or inactive.');
@@ -485,18 +588,10 @@ const getUnavailability = async (doctorId, requesterHospitalId) => {
     throw new ApiError(403, 'You can only view doctors in your hospital.');
   }
 
-  // Filter out past periods (optional: keep for reference)
-  const now = getHospitalNow();
-  const futureUnavailability = doctor.unavailability.filter(
-    u => u.endDate >= now
-  );
-
-  return futureUnavailability;
+  const today = normalizeDateOnly(getHospitalNow());
+  return doctor.unavailability.filter((u) => normalizeDateOnly(u.endDate) >= today);
 };
 
-/**
- * Update existing unavailability period
- */
 const updateUnavailability = async (
   unavailabilityId,
   doctorId,
@@ -521,39 +616,27 @@ const updateUnavailability = async (
     throw new ApiError(404, 'Unavailability period not found.');
   }
 
-  // Update allowed fields
-  if (updates.startDate) {
-    unavailability.startDate = new Date(updates.startDate);
-  }
-  if (updates.endDate) {
-    unavailability.endDate = new Date(updates.endDate);
-  }
-  if (updates.reason) {
-    unavailability.reason = updates.reason;
-  }
-  if (updates.notes !== undefined) {
-    unavailability.notes = updates.notes;
-  }
+  if (updates.startDate) unavailability.startDate = new Date(updates.startDate);
+  if (updates.endDate) unavailability.endDate = new Date(updates.endDate);
+  if (updates.reason) unavailability.reason = updates.reason;
+  if (updates.notes !== undefined) unavailability.notes = updates.notes;
 
-  // Validate dates if both provided
-  if (unavailability.startDate && unavailability.endDate) {
-    if (unavailability.startDate > unavailability.endDate) {
-      throw new ApiError(400, 'Start date must be before or equal to end date.');
-    }
+  if (unavailability.startDate > unavailability.endDate) {
+    throw new ApiError(400, 'Start date must be before or equal to end date.');
   }
 
   await doctor.save();
+  await cascadeDoctorUnavailability(
+    doctor,
+    unavailability.startDate,
+    unavailability.endDate,
+    unavailability.reason
+  );
+
   return unavailability;
 };
 
-/**
- * Delete unavailability period
- */
-const deleteUnavailability = async (
-  unavailabilityId,
-  doctorId,
-  requesterHospitalId
-) => {
+const deleteUnavailability = async (unavailabilityId, doctorId, requesterHospitalId) => {
   if (!doctorId) {
     throw new ApiError(400, 'Doctor ID is required.');
   }
@@ -572,7 +655,6 @@ const deleteUnavailability = async (
     throw new ApiError(404, 'Unavailability period not found.');
   }
 
-  // Remove the unavailability period
   doctor.unavailability.pull(unavailabilityId);
   await doctor.save();
 
@@ -592,4 +674,5 @@ module.exports = {
   getUnavailability,
   updateUnavailability,
   deleteUnavailability,
+  cascadeDoctorUnavailability,
 };

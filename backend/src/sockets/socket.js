@@ -9,37 +9,37 @@ const Doctor = require('../modules/doctors/doctors.model');
 
 let io = null;
 
-/**
- * Load and validate the authenticated user from the database.
- * Ensures the account is still active and retrieve current role/hospital/assignments.
- * Fails closed: if the user doesn't exist, is deactivated, or verification fails, reject.
- */
 const loadAndValidateUser = async (userId) => {
   const user = await User.findById(userId);
-
   if (!user) {
     throw new Error('User no longer exists.');
   }
-
   if (!user.isActive) {
     throw new Error('Account has been deactivated.');
   }
-
   return user;
 };
 
-/**
- * Verify that a doctor exists, is active, and belongs to the user's hospital.
- */
-const validateDoctorAccess = async (doctorId, userHospitalId, userRole) => {
+const validateDoctorAccess = async (doctorId, userHospitalId, userRole, userId) => {
   const doctor = await Doctor.findById(doctorId);
-
   if (!doctor || !doctor.isActive) {
     throw new Error('Doctor not found or inactive.');
   }
 
-  // Ensure doctor belongs to user's hospital (except admin, who can see any hospital)
-  if (userRole !== USER_ROLES.ADMIN && doctor.hospital.toString() !== userHospitalId.toString()) {
+  if (userRole === USER_ROLES.DOCTOR) {
+    const matchesProfile =
+      doctor._id.toString() === userId.toString() ||
+      (doctor.user && doctor.user.toString() === userId.toString());
+    if (!matchesProfile) {
+      throw new Error('You can only view your own queue.');
+    }
+    return doctor;
+  }
+
+  if (
+    userRole !== USER_ROLES.ADMIN &&
+    (!userHospitalId || doctor.hospital.toString() !== userHospitalId.toString())
+  ) {
     throw new Error('Doctor does not belong to your hospital.');
   }
 
@@ -63,24 +63,22 @@ const initializeSocket = (httpServer) => {
     },
   });
 
-  // JWT handshake authentication — mirrors the REST `protect` middleware.
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) {
       return next(new Error('Authentication error: token missing.'));
     }
     try {
-      const decoded = verifyAccessToken(token); // { id, role, iat, exp }
-
-      // Load user from database to verify account is still active and get current state
+      const decoded = verifyAccessToken(token);
       const user = await loadAndValidateUser(decoded.id);
 
-      // Attach full user object to socket (not just JWT payload)
       socket.user = {
         id: user._id.toString(),
         role: user.role,
-        hospital: user.hospital,
-        assignedDoctor: user.assignedDoctor,
+        hospital: user.hospital?._id ? user.hospital._id.toString() : user.hospital?.toString(),
+        assignedDoctor: user.assignedDoctor?._id
+          ? user.assignedDoctor._id.toString()
+          : user.assignedDoctor?.toString(),
         isActive: user.isActive,
       };
 
@@ -93,13 +91,18 @@ const initializeSocket = (httpServer) => {
   io.on('connection', (socket) => {
     const { id, role, hospital, assignedDoctor } = socket.user;
 
-    console.log(`[SOCKET] User connected: ${id} (role: ${role})`);
-
     if (role === USER_ROLES.PATIENT) {
       socket.join(patientRoom(id));
     }
 
-    if ([USER_ROLES.RECEPTIONIST, USER_ROLES.DOCTOR_ASSISTANT, USER_ROLES.DOCTOR, USER_ROLES.ADMIN].includes(role)) {
+    if (
+      [
+        USER_ROLES.RECEPTIONIST,
+        USER_ROLES.DOCTOR_ASSISTANT,
+        USER_ROLES.DOCTOR,
+        USER_ROLES.ADMIN,
+      ].includes(role)
+    ) {
       if (role === USER_ROLES.ADMIN) {
         socket.join(hospitalRoom('admin'));
       } else if (hospital) {
@@ -121,27 +124,25 @@ const initializeSocket = (httpServer) => {
             if (!hospital) {
               return socket.emit('error', { message: 'Your account is not assigned to a hospital' });
             }
-            await validateDoctorAccess(doctor, hospital, role);
+            await validateDoctorAccess(doctor, hospital, role, id);
             break;
 
           case USER_ROLES.DOCTOR_ASSISTANT:
-            if (!assignedDoctor || assignedDoctor.toString() !== doctor) {
+            if (!assignedDoctor || assignedDoctor.toString() !== doctor.toString()) {
               return socket.emit('error', { message: 'You are not assigned to this doctor' });
             }
             if (!hospital) {
               return socket.emit('error', { message: 'Your account is not assigned to a hospital' });
             }
-            await validateDoctorAccess(doctor, hospital, role);
+            await validateDoctorAccess(doctor, hospital, role, id);
             break;
 
           case USER_ROLES.DOCTOR:
-            if (doctor !== id) {
-              return socket.emit('error', { message: 'You can only view your own queue' });
-            }
+            await validateDoctorAccess(doctor, hospital, role, id);
             break;
 
           case USER_ROLES.ADMIN:
-            await validateDoctorAccess(doctor, hospital, role);
+            await validateDoctorAccess(doctor, hospital, role, id);
             break;
 
           default:
@@ -151,7 +152,6 @@ const initializeSocket = (httpServer) => {
         socket.join(queueRoom(doctor, date));
         socket.emit('subscribed', { doctor, date, message: 'Successfully subscribed to queue' });
       } catch (error) {
-        console.error(`[SOCKET] Queue subscribe error: ${error.message}`);
         socket.emit('error', { message: 'Subscription failed' });
       }
     });
@@ -161,9 +161,7 @@ const initializeSocket = (httpServer) => {
       socket.leave(queueRoom(doctor, date));
     });
 
-    socket.on('disconnect', () => {
-      console.log(`[SOCKET] User disconnected: ${id}`);
-    });
+    socket.on('disconnect', () => {});
   });
 
   return io;

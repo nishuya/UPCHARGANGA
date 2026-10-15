@@ -2,22 +2,20 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 const { QUEUE_ENTRY_STATUS, QUEUE_STATUS } = require('../../constants/enums');
 
-/**
- * Queue Schema
- * ONE document per (doctor, date) — represents the LIVE, real-time waiting
- * room state for that doctor on that day. This is what Socket.IO broadcasts
- * update as patients check in, get called, and finish consultation.
- *
- * Design choice — embedding `entries` as a sub-array instead of a separate
- * collection: queue entries for a single doctor/day are naturally bounded
- * (a doctor sees maybe 20-100 patients/day), always read/written together
- * ("give me the whole queue board"), and need to be updated atomically and
- * broadcast as one unit over sockets. Embedding avoids N+1 queries when
- * rendering the live queue board and keeps Socket.IO payloads simple
- * (emit the whole updated document). If a hospital ever needed unbounded
- * history per entry (e.g. detailed audit log), that would move to its own
- * collection — but for operational queue state, embedding is the right call.
- */
+const TIMING_STATUS_VALUES = [
+  'on-time',
+  'late-patient',
+  'delayed-queue',
+  'ahead-of-schedule',
+  'in-consultation',
+  'called',
+  'pending-skip',
+  'completed',
+  'cancelled',
+  'no-show',
+  'doctor-unavailable',
+];
+
 const queueEntrySchema = new Schema(
   {
     appointment: {
@@ -43,7 +41,7 @@ const queueEntrySchema = new Schema(
       default: QUEUE_ENTRY_STATUS.WAITING,
     },
 
-    // --- SCHEDULED (initial booking) ---
+    // --- SCHEDULED (initial booking baseline) ---
     scheduledStartTime: {
       type: String,
       default: null,
@@ -52,12 +50,16 @@ const queueEntrySchema = new Schema(
       type: String,
       default: null,
     },
+    initialEstimatedStartTime: {
+      type: Date,
+      default: null,
+    },
+    initialEstimatedEndTime: {
+      type: Date,
+      default: null,
+    },
 
-    // --- ESTIMATED CONSULTATION TIME (simplified, patient-facing display) ---
-    // The calculated consultation time slot based on queue position.
-    // Displayed to patient as "12:30 PM – 12:45 PM" with no delay/early messaging.
-    // Persisted so Socket.IO broadcasts can push the exact same value to patient's screen.
-    // Updated only when queue position changes (not continuously recalculated).
+    // --- ESTIMATED CONSULTATION TIME (authoritative current estimate) ---
     estimatedConsultationStartTime: {
       type: Date,
       default: null,
@@ -67,17 +69,29 @@ const queueEntrySchema = new Schema(
       default: null,
     },
 
-    // Internal queue position and timing (used for recalculation logic, NOT shown to patient)
-    // Recomputed by QueueService.recalculateQueue() every time the
-    // queue composition changes (a completion, skip, or cancellation).
+    // Active position among waiting patients (1 = next waiting patient; 0 = in consultation; null = inactive/skipped/completed)
     queuePosition: {
       type: Number,
       default: null,
     },
 
-    // DEPRECATED: These fields are no longer used for patient display.
-    // They remain for backward compatibility and internal calculations.
-    // Patients ONLY see estimatedConsultationStartTime / estimatedConsultationEndTime.
+    // Sequence order when a pending/skipped patient rejoins
+    reinsertOrder: {
+      type: Number,
+      default: null,
+    },
+    rejoinedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Recommended early reporting time (e.g., 10 min before estimated start)
+    recommendedArrivalTime: {
+      type: Date,
+      default: null,
+    },
+
+    // Legacy compatibility fields
     estimatedReportingTime: {
       type: Date,
       default: null,
@@ -86,14 +100,43 @@ const queueEntrySchema = new Schema(
       type: Number,
       default: null,
     },
-
-    // Legacy fields kept for compatibility (not used in new flow)
     estimatedStartTime: {
       type: String,
       default: null,
     },
     estimatedEndTime: {
       type: String,
+      default: null,
+    },
+
+    // --- TIMING CLASSIFICATION (ON TIME / LATE PATIENT / DELAYED QUEUE / AHEAD OF SCHEDULE) ---
+    timingStatus: {
+      type: String,
+      enum: TIMING_STATUS_VALUES,
+      default: 'on-time',
+    },
+    delayMinutes: {
+      type: Number,
+      default: 0,
+    },
+    aheadMinutes: {
+      type: Number,
+      default: 0,
+    },
+    statusLabel: {
+      type: String,
+      default: 'On Time',
+    },
+    statusMessage: {
+      type: String,
+      default: null,
+    },
+    recommendedAction: {
+      type: String,
+      default: null,
+    },
+    lastUpdatedAt: {
+      type: Date,
       default: null,
     },
 
@@ -148,23 +191,19 @@ const queueEntrySchema = new Schema(
       default: null,
     },
 
-    // Lifecycle timestamps for this specific patient's journey through the
-    // queue — used for analytics like "average wait time".
+    // Lifecycle timestamps
     checkedInAt: { type: Date, default: null },
     calledAt: { type: Date, default: null },
     consultationStartedAt: { type: Date, default: null },
     completedAt: { type: Date, default: null },
 
     // --- PENDING STATUS TRACKING ---
-    // When receptionist marks patient as not arrived/pending
     pendingMarkedAt: {
       type: Date,
       default: null,
     },
   },
   { _id: true, timestamps: false }
-  // _id: true so the frontend/socket layer can target a single entry
-  // for updates (e.g. "mark THIS entry as completed") via entries.$.
 );
 
 const queueSchema = new Schema(
@@ -190,15 +229,11 @@ const queueSchema = new Schema(
       index: true,
     },
 
-    // Date-only (midnight normalized) — one Queue document exists per
-    // doctor per calendar day.
     date: {
       type: Date,
       required: true,
     },
 
-    // The token currently being served — drives the "Now Serving: #12"
-    // display that patients watch in real time.
     currentTokenNumber: {
       type: Number,
       default: 0,
@@ -220,20 +255,41 @@ const queueSchema = new Schema(
       default: QUEUE_STATUS.ACTIVE,
     },
 
-    // Running average, recalculated as patients complete consultation —
-    // powers "estimated wait time" shown to patients still waiting.
+    // Configured consultation duration in minutes for this doctor/session
     averageConsultationMinutes: {
       type: Number,
       default: 15,
+    },
+
+    // Explicit override set via setAverageConsultationMinutes
+    configuredConsultationMinutes: {
+      type: Number,
+      default: null,
+    },
+
+    // Monotonically increasing version number for preventing stale UI overwrites
+    queueVersion: {
+      type: Number,
+      default: 1,
+    },
+
+    lastRecalculatedAt: {
+      type: Date,
+      default: null,
+    },
+
+    timingSummary: {
+      timingStatus: { type: String, default: 'on-time' },
+      queueDelayMinutes: { type: Number, default: 0 },
+      queueAheadMinutes: { type: Number, default: 0 },
+      statusLabel: { type: String, default: 'On Time' },
+      updatedAt: { type: Date, default: null },
     },
   },
   { timestamps: true }
 );
 
-// One live queue per doctor per day — prevents duplicate queue documents.
 queueSchema.index({ doctor: 1, date: 1 }, { unique: true });
-
-// Reception/admin dashboard: "all active queues in this hospital today".
 queueSchema.index({ hospital: 1, date: 1, status: 1 });
 
 module.exports = mongoose.model('Queue', queueSchema);

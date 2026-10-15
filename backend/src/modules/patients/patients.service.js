@@ -4,10 +4,16 @@ const Doctor = require('../doctors/doctors.model');
 const Appointment = require('../appointments/appointments.model');
 const Queue = require('../queue/queue.model');
 const QueueService = require('../queue/queue.service');
+const QueueScheduler = require('../queue/queue.scheduler.service');
 const ApiError = require('../../errors/ApiError');
 const ApiFeatures = require('../../utils/apiFeatures.util');
 const withTransaction = require('../../utils/withTransaction.util');
-const { normalizeDateOnly, getWeekdayName, getHospitalNow, combineDateAndTime } = require('../../utils/datetime.util');
+const {
+  normalizeDateOnly,
+  getWeekdayName,
+  getHospitalNow,
+  combineDateAndTime,
+} = require('../../utils/datetime.util');
 const {
   APPOINTMENT_STATUS,
   CONSULTATION_TYPE,
@@ -16,27 +22,19 @@ const {
 } = require('../../constants/enums');
 const { broadcastQueueRecalculation } = require('../../sockets/socketEmitter');
 
-const MAX_BOOKING_ADVANCE_DAYS = 90;
-
 const APPOINTMENT_POPULATE = [
   {
     path: 'doctor',
     select: 'specialization consultationFee user',
-    populate: { path: 'user', select: 'fullName' }
+    populate: { path: 'user', select: 'fullName' },
   },
   {
     path: 'hospital',
-    select: 'name address contact' // Select entire nested objects, not specific fields
+    select: 'name address contact',
   },
   { path: 'department', select: 'name' },
 ];
 
-/**
- * Loads and validates hospital → department → doctor as a consistent
- * chain (each must be active AND actually belong to the one above it).
- * This is PATIENT-MODULE orchestration — it has nothing to do with queue
- * mechanics, which is why it lives here and not in QueueService.
- */
 const loadAndValidateChain = async (hospitalId, departmentId, doctorId) => {
   const [hospital, department, doctor] = await Promise.all([
     Hospital.findOne({ _id: hospitalId, isActive: true }),
@@ -48,24 +46,19 @@ const loadAndValidateChain = async (hospitalId, departmentId, doctorId) => {
   if (!department) throw new ApiError(404, 'Department not found or is currently inactive.');
   if (!doctor) throw new ApiError(404, 'Doctor not found or is currently inactive.');
 
-  if (department.hospital.toString() !== hospitalId) {
+  if (department.hospital.toString() !== hospitalId.toString()) {
     throw new ApiError(400, 'Selected department does not belong to the selected hospital.');
   }
-  if (doctor.hospital.toString() !== hospitalId || doctor.department.toString() !== departmentId) {
+  if (
+    doctor.hospital.toString() !== hospitalId.toString() ||
+    doctor.department.toString() !== departmentId.toString()
+  ) {
     throw new ApiError(400, 'Selected doctor does not belong to the selected hospital/department.');
   }
 
   return { hospital, department, doctor };
 };
 
-/**
- * Checks if a doctor is unavailable on a specific date due to
- * a registered unavailability period.
- *
- * @param {Object} doctor - Doctor document
- * @param {Date} appointmentDate - Appointment date to check
- * @returns {Object|null} - Unavailability period if found, null otherwise
- */
 const checkDoctorUnavailability = (doctor, appointmentDate) => {
   const normalizedDate = normalizeDateOnly(appointmentDate);
 
@@ -73,7 +66,6 @@ const checkDoctorUnavailability = (doctor, appointmentDate) => {
     const startDate = normalizeDateOnly(unavail.startDate);
     const endDate = normalizeDateOnly(unavail.endDate);
 
-    // Check if appointment date falls within unavailability period
     if (normalizedDate >= startDate && normalizedDate <= endDate) {
       return unavail;
     }
@@ -83,13 +75,8 @@ const checkDoctorUnavailability = (doctor, appointmentDate) => {
 };
 
 /**
- * Orchestrates a booking: validates the patient-facing chain, then
- * delegates every actual queue-mechanics decision (token number, slot
- * time, booking number, queue entry creation, and this patient's own
- * ETA) to QueueService — the single source of truth for that logic.
- *
- * Also enforces booking window constraints (max 3 days advance) and
- * checks doctor unavailability.
+ * Books a new appointment and delegates queue entry creation + authoritative
+ * recalculation to QueueService / QueueScheduler.
  */
 const bookAppointment = async (patientId, payload) => {
   const { hospital, department, doctor, appointmentDate, reasonForVisit, symptoms } = payload;
@@ -100,13 +87,10 @@ const bookAppointment = async (patientId, payload) => {
   const now = getHospitalNow();
   const today = normalizeDateOnly(now);
 
-  // --- Booking window validation ---
   if (normalizedDate < today) {
     throw new ApiError(400, 'Cannot book an appointment for a past date.');
   }
 
-  // Check maximum advance (cannot book more than MAX_ADVANCE_DAYS ahead)
-  // Allows same-day, next-day, and up to 3 days from today
   const maxAdvanceDate = new Date(today);
   maxAdvanceDate.setUTCDate(maxAdvanceDate.getUTCDate() + BOOKING_CONSTRAINTS.MAX_ADVANCE_DAYS);
   if (normalizedDate > maxAdvanceDate) {
@@ -116,7 +100,6 @@ const bookAppointment = async (patientId, payload) => {
     );
   }
 
-  // --- Check doctor unavailability ---
   const unavailPeriod = checkDoctorUnavailability(chain.doctor, normalizedDate);
   if (unavailPeriod) {
     throw new ApiError(
@@ -126,22 +109,18 @@ const bookAppointment = async (patientId, payload) => {
   }
 
   const weekday = getWeekdayName(normalizedDate);
-  const daySchedule = chain.doctor.availability.find((slot) => slot.day === weekday);
+  const daySchedule = chain.doctor.availability.find(
+    (slot) => String(slot.day || '').toLowerCase() === weekday.toLowerCase()
+  );
   if (!daySchedule) {
-    throw new ApiError(400, `Dr. ${chain.doctor.user?.fullName ?? 'this doctor'} is not available on ${weekday}s.`);
+    throw new ApiError(
+      400,
+      `Dr. ${chain.doctor.user?.fullName ?? 'this doctor'} is not available on ${weekday}s.`
+    );
   }
 
-  // SECURITY FIX: Ensure maxPatients is set (should default to 30 from schema)
   const maxPatients = daySchedule.maxPatients || 30;
-
-  console.log('📅 [BOOKING] Day of week:', weekday);
-  console.log('📅 [BOOKING] Available days:', chain.doctor.availability.map(a => a.day));
-  console.log('📅 [BOOKING] Day schedule found:', !!daySchedule);
-  console.log('📅 [BOOKING] Max patients from schedule:', daySchedule.maxPatients);
-  console.log('📅 [BOOKING] Final maxPatients (with fallback):', maxPatients);
-
   if (!maxPatients || maxPatients < 1) {
-    console.error(`❌ [BOOKING] Doctor ${chain.doctor._id} has invalid maxPatients: ${maxPatients}`);
     throw new ApiError(500, 'Doctor schedule is not properly configured. Please contact support.');
   }
 
@@ -150,10 +129,7 @@ const bookAppointment = async (patientId, payload) => {
     throw new ApiError(400, 'This doctor is unavailable today. Please choose another date.');
   }
 
-  // --- From here on, every decision is delegated to QueueService ---
   const result = await withTransaction(async (session) => {
-    // CRITICAL: Check slot availability BEFORE incrementing token counter
-    // Count ACTIVE (non-cancelled) appointments for this doctor on this date
     const activeAppointmentCount = await Appointment.countDocuments({
       doctor: chain.doctor._id,
       appointmentDate: normalizedDate,
@@ -161,34 +137,29 @@ const bookAppointment = async (patientId, payload) => {
       isActive: true,
     }).session(session);
 
-    console.log('📋 [BOOKING] Checking slot availability...');
-    console.log('   Doctor ID:', chain.doctor._id);
-    console.log('   Appointment Date:', normalizedDate);
-    console.log('   Active (non-cancelled) appointments:', activeAppointmentCount);
-    console.log('   Max patients allowed:', maxPatients);
-    console.log('   Can book? (active < max):', activeAppointmentCount < maxPatients);
-
-    // Check BEFORE assigning token
     if (activeAppointmentCount >= maxPatients) {
-      console.error(`❌ [BOOKING] Slot full - ${activeAppointmentCount} active >= ${maxPatients} max`);
       throw new ApiError(409, 'All slots for this doctor on the selected date are fully booked.');
     }
 
-    console.log('✅ [BOOKING] Slot available, proceeding with token assignment');
-
-    // ATOMIC: Get next token within the transaction to prevent race conditions
-    const tokenNumber = await QueueService.getNextTokenNumber(chain.doctor._id, normalizedDate, session);
+    const tokenNumber = await QueueService.getNextTokenNumber(
+      chain.doctor._id,
+      normalizedDate,
+      session
+    );
 
     const timeSlot = QueueService.computeScheduledSlot(daySchedule, tokenNumber, normalizedDate);
-    const bookingNumber = QueueService.generateBookingNumber(chain.doctor._id, normalizedDate, tokenNumber);
+    const bookingNumber = QueueService.generateBookingNumber(
+      chain.doctor._id,
+      normalizedDate,
+      tokenNumber
+    );
 
-    // Calculate cutoff time: appointment start time + CONSULTATION_WINDOW_HOURS
     const appointmentStartTime = combineDateAndTime(normalizedDate, timeSlot.start);
     const appointmentEndTime = combineDateAndTime(normalizedDate, timeSlot.end);
     const cutoffTime = new Date(appointmentStartTime);
-    cutoffTime.setUTCHours(cutoffTime.getUTCHours() + BOOKING_CONSTRAINTS.CONSULTATION_WINDOW_HOURS);
-
-    let appointmentId;
+    cutoffTime.setUTCHours(
+      cutoffTime.getUTCHours() + BOOKING_CONSTRAINTS.CONSULTATION_WINDOW_HOURS
+    );
 
     const [createdAppointment] = await Appointment.create(
       [
@@ -208,16 +179,19 @@ const bookAppointment = async (patientId, payload) => {
           createdBy: patientId,
           cutoffTime,
           isActive: true,
-          // NEW: Set persistent estimated consultation times for patient display
+          initialEstimatedStartTime: appointmentStartTime,
+          initialEstimatedEndTime: appointmentEndTime,
           estimatedConsultationStartTime: appointmentStartTime,
           estimatedConsultationEndTime: appointmentEndTime,
+          consultationDurationMinutes: daySchedule.slotDurationMinutes || 15,
         },
       ],
       { session }
     );
-    appointmentId = createdAppointment._id;
+    const appointmentId = createdAppointment._id;
 
-    await QueueService.addEntry(
+    // addEntry inserts the entry and runs QueueScheduler.recalculateQueue once
+    const recalculatedQueue = await QueueService.addEntry(
       {
         hospitalId: chain.hospital._id,
         departmentId: chain.department._id,
@@ -227,22 +201,17 @@ const bookAppointment = async (patientId, payload) => {
         patientId,
         tokenNumber,
         averageConsultationMinutes: daySchedule.slotDurationMinutes,
-        timeSlot, // Pass time slot for attendance window calculation
+        timeSlot,
       },
       session
     );
 
-    // Recalculating immediately after adding the entry computes THIS
-    // patient's own queuePosition/ETA through the exact same code path
-    // used for every subsequent recalculation — one formula, no drift.
-    const recalculatedQueue = await QueueService.recalculateQueue(chain.doctor._id, normalizedDate, session);
-
-    const appointment = await Appointment.findById(appointmentId).populate(APPOINTMENT_POPULATE).session(session);
-    const queue = await Queue.findOne({
-      doctor: chain.doctor._id,
-      date: normalizedDate,
-    }).session(session);
-    const myEntry = queue.entries.find((e) => e.appointment.toString() === appointmentId.toString());
+    const appointment = await Appointment.findById(appointmentId)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
+    const myEntry = recalculatedQueue.entries.find(
+      (e) => e.appointment.toString() === appointmentId.toString()
+    );
 
     return {
       appointment,
@@ -251,21 +220,29 @@ const bookAppointment = async (patientId, payload) => {
       doctorId: chain.doctor._id,
       date: normalizedDate,
       recalculatedQueue,
-      // NEW: Return estimated consultation time (not deprecated wait time)
-      estimatedConsultationStartTime: myEntry.estimatedConsultationStartTime,
-      estimatedConsultationEndTime: myEntry.estimatedConsultationEndTime,
+      estimatedConsultationStartTime: myEntry?.estimatedConsultationStartTime,
+      estimatedConsultationEndTime: myEntry?.estimatedConsultationEndTime,
+      recommendedArrivalTime: myEntry?.recommendedArrivalTime,
+      timingStatus: myEntry?.timingStatus || 'on-time',
+      delayMinutes: myEntry?.delayMinutes || 0,
+      aheadMinutes: myEntry?.aheadMinutes || 0,
+      statusLabel: myEntry?.statusLabel || 'On Time',
+      statusMessage: myEntry?.statusMessage || null,
+      recommendedAction: myEntry?.recommendedAction || null,
       queueStatus: {
-        currentlyServingToken: queue.currentTokenNumber,
-        totalTokensIssued: queue.totalTokensIssued,
-        queuePosition: myEntry.queuePosition,
-        // Legacy field kept for backward compatibility (not used in new display)
-        estimatedWaitingMinutes: myEntry.estimatedWaitingMinutes,
+        currentlyServingToken: recalculatedQueue.currentTokenNumber,
+        totalTokensIssued: recalculatedQueue.totalTokensIssued,
+        queuePosition: myEntry?.queuePosition,
+        estimatedWaitingMinutes: myEntry?.estimatedWaitingMinutes,
+        timingStatus: myEntry?.timingStatus || 'on-time',
+        delayMinutes: myEntry?.delayMinutes || 0,
+        aheadMinutes: myEntry?.aheadMinutes || 0,
+        statusLabel: myEntry?.statusLabel || 'On Time',
+        queueVersion: recalculatedQueue.queueVersion || 1,
       },
     };
   });
 
-  // Broadcast AFTER transaction commits — notifies all staff and other patients
-  // that a new patient has been added and queue positions have shifted
   broadcastQueueRecalculation({
     doctorId: result.doctorId,
     date: result.date,
@@ -278,6 +255,14 @@ const bookAppointment = async (patientId, payload) => {
     queueNumber: result.queueNumber,
     estimatedConsultationStartTime: result.estimatedConsultationStartTime,
     estimatedConsultationEndTime: result.estimatedConsultationEndTime,
+    estimatedReportingTime: result.estimatedConsultationStartTime,
+    recommendedArrivalTime: result.recommendedArrivalTime,
+    timingStatus: result.timingStatus,
+    delayMinutes: result.delayMinutes,
+    aheadMinutes: result.aheadMinutes,
+    statusLabel: result.statusLabel,
+    statusMessage: result.statusMessage,
+    recommendedAction: result.recommendedAction,
     queueStatus: result.queueStatus,
   };
 };
@@ -311,61 +296,78 @@ const getMyAppointmentById = async (patientId, appointmentId) => {
 };
 
 /**
- * Cancels the patient's own appointment. Marks the matching Queue entry
- * as 'skipped' (removing it from the waiting pool) and delegates to
- * QueueService to recalculate every remaining patient's position/ETA,
- * since one fewer person ahead of them changes their numbers too.
+ * Cancels the patient's own appointment, removes it from the active queue sequence,
+ * recalculates all remaining waiting patients, and broadcasts the update via Socket.IO.
  */
 const cancelMyAppointment = async (patientId, appointmentId, cancellationReason) => {
-  console.log('🚫 [CANCEL] Starting cancellation for appointment:', appointmentId, 'by patient:', patientId);
-
   const appointment = await Appointment.findOne({ _id: appointmentId, patient: patientId });
-  console.log('🔍 [CANCEL] Found appointment:', appointment ? 'YES' : 'NO');
 
   if (!appointment) {
-    console.error('❌ [CANCEL] Appointment not found');
     throw new ApiError(404, 'Appointment not found.');
   }
 
-  console.log('📊 [CANCEL] Appointment status:', appointment.status);
-
   if (appointment.status === APPOINTMENT_STATUS.CANCELLED) {
-    console.error('❌ [CANCEL] Already cancelled');
     throw new ApiError(400, 'This appointment is already cancelled.');
   }
 
   if (appointment.status === APPOINTMENT_STATUS.COMPLETED) {
-    console.error('❌ [CANCEL] Already completed');
     throw new ApiError(400, 'Cannot cancel a completed appointment.');
   }
 
-  // Allow cancellation even if appointment time has passed - patient can be late
-  // Only block if appointment is COMPLETED by the doctor
-  console.log('✅ [CANCEL] Appointment can be cancelled (not completed yet)');
+  const now = getHospitalNow();
 
-  return withTransaction(async (session) => {
+  const { updatedAppointment, recalculatedQueue } = await withTransaction(async (session) => {
     appointment.status = APPOINTMENT_STATUS.CANCELLED;
     appointment.cancelledBy = patientId;
     appointment.cancellationReason = cancellationReason || null;
+    appointment.cancelledAt = now;
+    appointment.isInDoctorQueue = false;
+    appointment.queuePosition = null;
+    appointment.estimatedConsultationStartTime = null;
+    appointment.estimatedConsultationEndTime = null;
+    appointment.recommendedArrivalTime = null;
+    appointment.timingStatus = 'cancelled';
+    appointment.statusLabel = 'Cancelled';
     await appointment.save({ session });
-    console.log('💾 [CANCEL] Appointment status saved as CANCELLED');
 
     await Queue.updateOne(
       { doctor: appointment.doctor, date: appointment.appointmentDate },
-      { $set: { 'entries.$[elem].status': QUEUE_ENTRY_STATUS.SKIPPED } },
+      {
+        $set: {
+          'entries.$[elem].status': QUEUE_ENTRY_STATUS.SKIPPED,
+          'entries.$[elem].delayReason': 'cancelled',
+          'entries.$[elem].queuePosition': null,
+          'entries.$[elem].estimatedConsultationStartTime': null,
+          'entries.$[elem].estimatedConsultationEndTime': null,
+        },
+      },
       { arrayFilters: [{ 'elem.appointment': appointment._id }], session }
     );
-    console.log('📋 [CANCEL] Queue entry marked as SKIPPED');
 
-    await QueueService.recalculateQueue(appointment.doctor, appointment.appointmentDate, session);
-    console.log('🔄 [CANCEL] Queue recalculated');
+    const recalculated = await QueueScheduler.recalculateQueue(
+      appointment.doctor,
+      appointment.appointmentDate,
+      session
+    );
 
-    console.log('✅ [CANCEL] Cancellation complete');
-    return appointment;
+    const populated = await Appointment.findById(appointment._id)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
+
+    return { updatedAppointment: populated || appointment, recalculatedQueue: recalculated };
   });
-}
 
-  
+  // Broadcast AFTER transaction commits so Reception, Doctor Assistant, and all subsequent Patients update immediately
+  if (recalculatedQueue) {
+    broadcastQueueRecalculation({
+      doctorId: appointment.doctor,
+      date: appointment.appointmentDate,
+      queue: recalculatedQueue,
+    });
+  }
+
+  return updatedAppointment;
+};
 
 module.exports = {
   bookAppointment,

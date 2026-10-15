@@ -1,58 +1,54 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import apiClient from '../../../services/apiClient';
+import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getMyAppointmentQueueEntry } from '../services/patient.api';
 import { getSocket } from '../../../sockets/socketClient';
 import { SOCKET_EVENTS } from '../../../constants/socketEvents';
 
-/**
- * Layers real-time updates on top of the REST-fetched appointment. The
- * server emits these events into the patient's own private room (see
- * backend/src/sockets/socket.js — every patient auto-joins `patient:<id>`
- * on connect), so no explicit subscribe/unsubscribe call is needed here,
- * unlike the doctor/reception queue-board views which opt into a specific
- * doctor/date room.
- *
- * Returns only the fields that can change live; the page merges these
- * over the REST snapshot rather than replacing it, since the socket
- * payloads are deliberately small deltas, not the full appointment.
- *
- * IMPORTANT: No countdown timers or "wait time" display. The patient sees
- * only their estimated consultation time slot (e.g. "12:30 PM – 12:45 PM")
- * and queue position. Updates are sent only when the queue changes, not
- * continuously.
- */
-
-/**
- * Fetch appointment's queue entry to get real-time estimated times
- */
 const fetchAppointmentQueueEntry = async (appointmentId) => {
-  const response = await apiClient.get(`/appointments/${appointmentId}/queue-entry`);
-  return response.data.data;
+  const response = await getMyAppointmentQueueEntry(appointmentId);
+  return response.data?.data?.queueEntry || response.data?.data || null;
 };
 
+/**
+ * Real-time patient queue tracking hook.
+ * - Fetches the authoritative queueEntry from GET /api/v1/patients/appointments/:id/queue-entry
+ * - Subscribes to Socket.IO PATIENT_ETA_UPDATED and PATIENT_CALLED events
+ * - Prevents stale events from overwriting newer state via monotonic queueVersion comparison
+ * - Automatically re-synchronizes from REST upon socket reconnection
+ */
 const useAppointmentTracking = (appointmentId) => {
+  const queryClient = useQueryClient();
   const [live, setLive] = useState(null);
 
-  // Initial fetch of queue entry for this appointment
   const { data: queueEntry } = useQuery({
     queryKey: ['appointmentQueueEntry', appointmentId],
     queryFn: () => fetchAppointmentQueueEntry(appointmentId),
     enabled: !!appointmentId,
-    refetchInterval: 30000, // Refetch every 30 seconds as fallback
-    staleTime: 10000, // Data is stale after 10 seconds
+    refetchInterval: 30000,
+    staleTime: 5000,
   });
 
-  // Initialize live data from queue entry
   useEffect(() => {
     if (queueEntry) {
-      setLive((prev) => ({
-        ...prev,
-        appointmentId,
-        estimatedConsultationStartTime: queueEntry.estimatedConsultationStartTime,
-        estimatedConsultationEndTime: queueEntry.estimatedConsultationEndTime,
-        queuePosition: queueEntry.queuePosition,
-        queueStatus: queueEntry.status,
-      }));
+      setLive((prev) => {
+        if (
+          prev?.queueVersion &&
+          queueEntry.queueVersion &&
+          queueEntry.queueVersion < prev.queueVersion
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          ...queueEntry,
+          appointmentId,
+          queueStatus: queueEntry.status,
+          called:
+            prev?.called ||
+            Boolean(queueEntry.called) ||
+            ['called', 'in-consultation'].includes(queueEntry.status),
+        };
+      });
     }
   }, [queueEntry, appointmentId]);
 
@@ -61,35 +57,67 @@ const useAppointmentTracking = (appointmentId) => {
     if (!socket || !appointmentId) return undefined;
 
     const handleEtaUpdated = (payload) => {
-      if (payload?.appointmentId && payload.appointmentId !== appointmentId) return;
-      // Only update if this is a meaningful change (different estimated time)
+      if (payload?.appointmentId && String(payload.appointmentId) !== String(appointmentId)) {
+        return;
+      }
+
       setLive((prev) => {
-        if (prev &&
-            prev.estimatedConsultationStartTime === payload.estimatedConsultationStartTime &&
-            prev.estimatedConsultationEndTime === payload.estimatedConsultationEndTime) {
-          // No change in estimated time — skip update to avoid unnecessary re-renders
+        if (
+          prev?.queueVersion &&
+          payload?.queueVersion &&
+          payload.queueVersion < prev.queueVersion
+        ) {
           return prev;
         }
-        return { ...prev, ...payload };
+        return {
+          ...prev,
+          ...payload,
+          queueStatus: payload.status || prev?.queueStatus,
+          called:
+            Boolean(payload.called) ||
+            ['called', 'in-consultation'].includes(payload.status),
+        };
       });
+
+      queryClient.invalidateQueries({ queryKey: ['appointment', appointmentId] });
+      queryClient.invalidateQueries({ queryKey: ['myAppointments'] });
     };
 
     const handleCalled = (payload) => {
-      if (payload?.appointmentId && payload.appointmentId !== appointmentId) return;
-      setLive((prev) => ({ ...prev, ...payload, called: true }));
+      if (payload?.appointmentId && String(payload.appointmentId) !== String(appointmentId)) {
+        return;
+      }
+      setLive((prev) => ({
+        ...prev,
+        ...payload,
+        called: true,
+        timingStatus: 'called',
+        statusLabel: 'Called — Proceed to Room',
+      }));
+      queryClient.invalidateQueries({ queryKey: ['appointmentQueueEntry', appointmentId] });
+      queryClient.invalidateQueries({ queryKey: ['appointment', appointmentId] });
+      queryClient.invalidateQueries({ queryKey: ['myAppointments'] });
+    };
+
+    const handleReconnect = () => {
+      // Reconnecting clients fetch the latest persisted state before relying on new events
+      queryClient.invalidateQueries({ queryKey: ['appointmentQueueEntry', appointmentId] });
+      queryClient.invalidateQueries({ queryKey: ['appointment', appointmentId] });
+      queryClient.invalidateQueries({ queryKey: ['myAppointments'] });
     };
 
     socket.on(SOCKET_EVENTS.PATIENT_ETA_UPDATED, handleEtaUpdated);
     socket.on(SOCKET_EVENTS.PATIENT_CALLED, handleCalled);
+    socket.on('connect', handleReconnect);
 
     return () => {
       socket.off(SOCKET_EVENTS.PATIENT_ETA_UPDATED, handleEtaUpdated);
       socket.off(SOCKET_EVENTS.PATIENT_CALLED, handleCalled);
+      socket.off('connect', handleReconnect);
     };
-  }, [appointmentId]);
+  }, [appointmentId, queryClient]);
 
   return live;
 };
 
 export default useAppointmentTracking;
-

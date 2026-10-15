@@ -7,6 +7,11 @@ import { Spinner, ErrorNotice } from '../components/ui/PStateNotice';
 import { useAppointment, useCancelAppointment } from '../hooks/useAppointments';
 import useAppointmentTracking from '../hooks/useAppointmentTracking';
 import { ROUTES } from '../../../constants/routePaths';
+import {
+  formatQueueTime,
+  formatQueueTimeRange,
+  getTimingStatusMeta,
+} from '../../../utils/queueTime';
 
 const CANCELLABLE_STATUSES = ['pending', 'confirmed', 'checked-in'];
 
@@ -17,15 +22,14 @@ const formatDate = (value) =>
     year: 'numeric',
   });
 
-const formatTime = (value) =>
-  new Date(value).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
-
 /**
- * Premium UpcharGanga Appointment Tracking Page — Responsive
+ * UpcharGanga Patient Live Appointment Tracking Page
+ * Displays:
+ * 1. Permanent token number & booking reference
+ * 2. Current active queue position
+ * 3. Authoritative estimated consultation start/end time & recommended arrival time
+ * 4. On-time, Doctor running late (+X min), Ahead of schedule (-X min), or Arrival overdue status
+ * 5. Clear next action for the patient
  */
 const AppointmentTrackPage = () => {
   const { id } = useParams();
@@ -53,14 +57,49 @@ const AppointmentTrackPage = () => {
     );
   }
 
-  const canCancel = CANCELLABLE_STATUSES.includes(appointment.status);
+  // Merge live Socket.IO / queue-entry state over the REST appointment snapshot
+  const effectiveStatus =
+    live?.appointmentStatus ||
+    (live?.status === 'in-consultation'
+      ? 'in-consultation'
+      : live?.status === 'completed'
+        ? 'completed'
+        : appointment.status);
+  const canCancel = CANCELLABLE_STATUSES.includes(effectiveStatus);
+
+  const estimatedStart =
+    live?.estimatedConsultationStartTime ?? appointment.estimatedConsultationStartTime;
+  const estimatedEnd =
+    live?.estimatedConsultationEndTime ?? appointment.estimatedConsultationEndTime;
+  const recommendedArrival =
+    live?.recommendedArrivalTime ?? appointment.recommendedArrivalTime;
+  const queuePosition =
+    live?.queuePosition !== undefined ? live.queuePosition : appointment.queuePosition;
+  const currentlyServingToken = live?.currentlyServingToken ?? 0;
+
+  const timingData = {
+    timingStatus:
+      effectiveStatus === 'cancelled'
+        ? appointment.cancellationReason === 'DOCTOR_UNAVAILABLE'
+          ? 'doctor-unavailable'
+          : 'cancelled'
+        : effectiveStatus === 'completed'
+          ? 'completed'
+          : live?.timingStatus || appointment.timingStatus || 'on-time',
+    delayMinutes: live?.delayMinutes ?? appointment.delayMinutes ?? 0,
+    aheadMinutes: live?.aheadMinutes ?? appointment.aheadMinutes ?? 0,
+    statusLabel: live?.statusLabel || appointment.statusLabel,
+    statusMessage: live?.statusMessage || appointment.statusMessage,
+    recommendedAction: live?.recommendedAction || appointment.recommendedAction,
+  };
+  const timingMeta = getTimingStatusMeta(timingData);
 
   const handleCancel = async () => {
     try {
       await cancelMutation.mutateAsync({ id, cancellationReason: cancelReason });
       navigate(ROUTES.PATIENT.APPOINTMENTS);
     } catch (err) {
-      console.error('❌ Cancellation failed:', err);
+      console.error('Cancellation failed:', err);
     }
   };
 
@@ -82,6 +121,7 @@ const AppointmentTrackPage = () => {
           </h1>
           <p className="mt-1 text-body-sm text-neutral-600 break-words">
             {appointment.hospital?.name}
+            {appointment.department?.name ? ` · ${appointment.department.name}` : ''}
           </p>
           {appointment.hospital?.address?.line1 && (
             <p className="text-caption text-neutral-500 break-words">
@@ -89,12 +129,17 @@ const AppointmentTrackPage = () => {
             </p>
           )}
         </div>
-        <div className="shrink-0">
-          <PBadge status={live?.called ? 'in-consultation' : appointment.status} />
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <PBadge status={live?.called ? 'in-consultation' : effectiveStatus} />
+          <span
+            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${timingMeta.badgeClass}`}
+          >
+            {timingMeta.badgeText}
+          </span>
         </div>
       </div>
 
-      {/* Token Display — Responsive Stacked on Mobile, Row on Tablet/Desktop */}
+      {/* Token & Authoritative Estimate Banner */}
       <div className="mt-6 sm:mt-2xl flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-4 sm:gap-xl rounded-2xl border border-upchar-200 bg-upchar-50/60 p-4 sm:px-2xl sm:py-xl">
         <div>
           <p className="text-label font-medium uppercase tracking-widest text-neutral-500">
@@ -106,43 +151,63 @@ const AppointmentTrackPage = () => {
         </div>
 
         {/* Estimated Consultation Time */}
-        {live?.estimatedConsultationStartTime != null &&
-        live?.estimatedConsultationEndTime != null ? (
+        {estimatedStart ? (
           <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
-            <p className="text-caption text-neutral-600">Estimated consultation time</p>
+            <p className="text-caption text-neutral-600">Estimated consultation</p>
             <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
-              {formatTime(live.estimatedConsultationStartTime)} –{' '}
-              {formatTime(live.estimatedConsultationEndTime)}
+              {formatQueueTimeRange(estimatedStart, estimatedEnd)}
             </p>
+            {recommendedArrival &&
+              !['completed', 'cancelled', 'no-show'].includes(effectiveStatus) && (
+                <p className="text-xs font-medium text-neutral-600 mt-1">
+                  Please arrive by {formatQueueTime(recommendedArrival)}
+                </p>
+              )}
           </div>
         ) : appointment.timeSlot ? (
           <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Booked time slot</p>
             <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
-              {appointment.timeSlot.start} – {appointment.timeSlot.end}
+              {formatQueueTimeRange(appointment.timeSlot.start, appointment.timeSlot.end)}
             </p>
           </div>
         ) : null}
 
-        {/* Queue Position */}
-        {live?.queuePosition != null && (
+        {/* Active Queue Position */}
+        {queuePosition != null && queuePosition > 0 && (
           <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Position in queue</p>
             <p className="text-xl sm:text-2xl font-bold text-neutral-900 mt-1">
-              {live.queuePosition}
+              #{queuePosition}
             </p>
+            {currentlyServingToken > 0 && (
+              <p className="text-xs text-neutral-500 mt-0.5">
+                Now serving #{currentlyServingToken}
+              </p>
+            )}
           </div>
         )}
       </div>
 
-      {/* Called Alert */}
-      {live?.called && (
-        <div className="mt-4 sm:mt-xl rounded-lg border border-success-200 bg-success-50 px-4 py-3">
-          <p className="text-sm sm:text-base font-semibold text-success-700">
-            ✓ You&apos;re being called — please proceed to the consultation room now.
-          </p>
+      {/* Live Queue Timing & Action Guidance Banner */}
+      <div className={`mt-4 sm:mt-xl rounded-xl border p-4 ${timingMeta.bannerClass}`}>
+        <div className="flex flex-col xs:flex-row xs:items-center xs:justify-between gap-2">
+          <p className="text-sm sm:text-base font-bold">{timingMeta.headline}</p>
+          {timingData.delayMinutes > 0 && (
+            <span className="text-xs font-semibold uppercase tracking-wider">
+              Estimated delay: {timingData.delayMinutes} min
+            </span>
+          )}
+          {timingData.aheadMinutes > 0 && (
+            <span className="text-xs font-semibold uppercase tracking-wider">
+              Ahead by ~{timingData.aheadMinutes} min
+            </span>
+          )}
         </div>
-      )}
+        {timingMeta.detail && (
+          <p className="mt-1.5 text-xs sm:text-sm opacity-90">{timingMeta.detail}</p>
+        )}
+      </div>
 
       {/* Details Card */}
       <Card className="mt-4 sm:mt-xl">
@@ -160,16 +225,32 @@ const AppointmentTrackPage = () => {
             </dd>
           </div>
           <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
-            <dt className="text-body-sm text-neutral-600">Time slot</dt>
+            <dt className="text-body-sm text-neutral-600">Initial booked slot</dt>
             <dd className="text-body font-semibold text-neutral-900">
-              {appointment.timeSlot?.start}–{appointment.timeSlot?.end}
+              {formatQueueTimeRange(appointment.timeSlot?.start, appointment.timeSlot?.end)}
             </dd>
           </div>
+          {estimatedStart && (
+            <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
+              <dt className="text-body-sm text-neutral-600">Current estimated consultation</dt>
+              <dd className="text-body font-semibold text-upchar-600">
+                {formatQueueTimeRange(estimatedStart, estimatedEnd)}
+              </dd>
+            </div>
+          )}
+          {live?.lastUpdatedAt && (
+            <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
+              <dt className="text-body-sm text-neutral-600">Queue state last updated</dt>
+              <dd className="text-xs font-medium text-neutral-500">
+                {formatQueueTime(live.lastUpdatedAt)}
+              </dd>
+            </div>
+          )}
         </dl>
       </Card>
 
       {/* Cancellation Reason */}
-      {appointment.status === 'cancelled' && appointment.cancellationReason && (
+      {effectiveStatus === 'cancelled' && appointment.cancellationReason && (
         <p className="mt-4 text-body-sm text-neutral-600 break-words">
           Cancellation reason: {appointment.cancellationReason}
         </p>

@@ -19,7 +19,7 @@ const APPOINTMENT_POPULATE = [
   { path: 'patient', select: 'fullName email phone gender dateOfBirth profileImage' },
   {
     path: 'doctor',
-    select: 'specialization consultationFee user',
+    select: 'specialization consultationFee availability user',
     populate: { path: 'user', select: 'fullName' },
   },
   { path: 'hospital', select: 'name' },
@@ -27,8 +27,6 @@ const APPOINTMENT_POPULATE = [
   { path: 'payment' },
 ];
 
-/** Statuses reception can no longer act on — the visit is already over,
- * one way or another. */
 const TERMINAL_STATUSES = [
   APPOINTMENT_STATUS.COMPLETED,
   APPOINTMENT_STATUS.CANCELLED,
@@ -43,9 +41,6 @@ const findAppointmentOr404 = async (appointmentId) => {
   return appointment;
 };
 
-/** Updates the single matching entry inside the doctor's live Queue
- * document for this appointment's date — used by every action below that
- * needs to reflect a status change in the waiting-room view. */
 const updateQueueEntry = async (appointment, fields, session) => {
   await Queue.updateOne(
     { doctor: appointment.doctor._id || appointment.doctor, date: appointment.appointmentDate },
@@ -61,20 +56,23 @@ const updateQueueEntry = async (appointment, fields, session) => {
 // ---------------------------------------------------------------------
 // 0. Today's Patients — the dashboard's main board
 // ---------------------------------------------------------------------
-/**
- * Everything booked for THIS receptionist's hospital, today. Sorted by
- * token number (the order patients are meant to be seen in), not by
- * creation time — a receptionist scanning the board reads it as "who's
- * next", not "who booked most recently".
- */
 const getTodaysAppointments = async (hospitalId, { status, search } = {}) => {
   if (!hospitalId) {
     throw new ApiError(400, 'Your account is not assigned to a hospital yet.');
   }
 
+  const today = normalizeDateOnly(getHospitalNow());
+
+  // Ensure all active queues for this hospital today are recalculated so
+  // reception sees up-to-the-minute estimates and late/delayed indicators.
+  const activeQueues = await Queue.find({ hospital: hospitalId, date: today }, 'doctor date').lean();
+  for (const q of activeQueues) {
+    await QueueScheduler.recalculateQueue(q.doctor, q.date);
+  }
+
   const filter = {
     hospital: hospitalId,
-    appointmentDate: normalizeDateOnly(getHospitalNow()),
+    appointmentDate: today,
   };
   if (status) filter.status = status;
   if (search) filter.bookingNumber = new RegExp(search.trim(), 'i');
@@ -104,10 +102,13 @@ const verifyPatient = async (appointmentId, receptionistId, verificationNotes) =
   const appointment = await findAppointmentOr404(appointmentId);
 
   if (TERMINAL_STATUSES.includes(appointment.status)) {
-    throw new ApiError(400, `Cannot verify a patient whose appointment is already ${appointment.status}.`);
+    throw new ApiError(
+      400,
+      `Cannot verify a patient whose appointment is already ${appointment.status}.`
+    );
   }
 
-  appointment.verifiedAt = new Date();
+  appointment.verifiedAt = getHospitalNow();
   appointment.verifiedBy = receptionistId;
   appointment.verificationNotes = verificationNotes || null;
   await appointment.save();
@@ -128,7 +129,10 @@ const collectPayment = async (appointmentId, receptionistId, { method, amount })
   const appointment = await findAppointmentOr404(appointmentId);
 
   if (TERMINAL_STATUSES.includes(appointment.status)) {
-    throw new ApiError(400, `Cannot collect payment for an appointment that is already ${appointment.status}.`);
+    throw new ApiError(
+      400,
+      `Cannot collect payment for an appointment that is already ${appointment.status}.`
+    );
   }
 
   const existingSuccessfulPayment = await Payment.findOne({
@@ -147,9 +151,9 @@ const collectPayment = async (appointmentId, receptionistId, { method, amount })
     patient: appointment.patient._id || appointment.patient,
     amount: finalAmount,
     method,
-    gateway: PAYMENT_GATEWAY.CASH_COUNTER, // any payment collected in-person at reception
-    status: PAYMENT_STATUS.SUCCESS,        // collected immediately, no async gateway callback
-    paidAt: new Date(),
+    gateway: PAYMENT_GATEWAY.CASH_COUNTER,
+    status: PAYMENT_STATUS.SUCCESS,
+    paidAt: getHospitalNow(),
     receivedBy: receptionistId,
   });
 
@@ -160,24 +164,27 @@ const collectPayment = async (appointmentId, receptionistId, { method, amount })
 };
 
 // ---------------------------------------------------------------------
-// 4. Mark Pending
+// 4. Mark Pending (Patient missed turn — removed from active sequence)
 // ---------------------------------------------------------------------
-/**
- * Reception marks a patient as pending (not arrived). This updates the queue
- * entry to PENDING status, triggering recalculation of downstream delays.
- */
 const markPending = async (appointmentId) => {
   const appointment = await findAppointmentOr404(appointmentId);
 
-  if (![APPOINTMENT_STATUS.PENDING, APPOINTMENT_STATUS.CONFIRMED, APPOINTMENT_STATUS.CHECKED_IN].includes(appointment.status)) {
+  if (
+    ![
+      APPOINTMENT_STATUS.PENDING,
+      APPOINTMENT_STATUS.CONFIRMED,
+      APPOINTMENT_STATUS.CHECKED_IN,
+    ].includes(appointment.status)
+  ) {
     throw new ApiError(
       400,
       `Cannot mark pending — appointment status is already "${appointment.status}".`
     );
   }
 
+  const now = getHospitalNow();
+
   return withTransaction(async (session) => {
-    // Find and update the queue entry
     const queue = await Queue.findOne({
       doctor: appointment.doctor._id || appointment.doctor,
       date: appointment.appointmentDate,
@@ -187,31 +194,38 @@ const markPending = async (appointmentId) => {
       throw new ApiError(404, 'Queue not found for this appointment.');
     }
 
-    const entry = queue.entries.find((e) => e.appointment.toString() === appointment._id.toString());
+    const entry = queue.entries.find(
+      (e) => e.appointment.toString() === appointment._id.toString()
+    );
     if (!entry) {
       throw new ApiError(404, 'Queue entry not found for this appointment.');
     }
 
-    // Mark entry as PENDING
-    entry.status = QUEUE_ENTRY_STATUS.PENDING;
-    entry.pendingMarkedAt = new Date();
+    // Move patient out of active scheduled sequence
+    QueueService.markPending(entry, now);
     await queue.save({ session });
 
-    console.log('✅ [RECEPTION] Patient marked as pending, queue entry updated');
+    appointment.status = APPOINTMENT_STATUS.PENDING;
+    appointment.isInDoctorQueue = false;
+    await appointment.save({ session });
 
-    // Recalculate queue — pending delays now cascade to downstream patients
+    // Recalculate queue — downstream patients immediately move up
     const recalculatedQueue = await QueueScheduler.recalculateQueue(
       queue.doctor,
       queue.date,
       session
     );
 
-    return { appointment, queue: recalculatedQueue };
+    const updatedAppointment = await Appointment.findById(appointment._id)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
+
+    return { appointment: updatedAppointment || appointment, queue: recalculatedQueue };
   });
 };
 
-// -----
-// 5. Mark Arrived
+// ---------------------------------------------------------------------
+// 5. Mark Arrived (Check-in or Rejoin after Pending/Skipped)
 // ---------------------------------------------------------------------
 const markArrived = async (appointmentId) => {
   const appointment = await findAppointmentOr404(appointmentId);
@@ -223,45 +237,53 @@ const markArrived = async (appointmentId) => {
     );
   }
 
+  const now = getHospitalNow();
+  const doctorId = appointment.doctor._id || appointment.doctor;
+
   const result = await withTransaction(async (session) => {
     appointment.status = APPOINTMENT_STATUS.CHECKED_IN;
-    appointment.arrivedAt = new Date();
+    appointment.arrivedAt = now;
+    appointment.attendanceMarkedAt = now;
     await appointment.save({ session });
 
-// --- Reception (Panel 1) workflow tracking ---
-// Recorded when a receptionist confirms the patient's identity against
-// the booking — a distinct, auditable step from simply looking the
-// booking up.
+    const queue = await Queue.findOne({
+      doctor: doctorId,
+      date: appointment.appointmentDate,
+    }).session(session);
 
-// When patient arrives, update queue entry with check-in time
-await updateQueueEntry(
-  appointment,
-  {
-    checkedInAt: appointment.arrivedAt,
-    arrivalStatus: 'arrived-on-time', // Mark as arrived on time
-    attendanceTimeoutApplied: true,   // Prevent timeout from being applied
-  },
-  session
-);
+    if (queue) {
+      const entry = queue.entries.find(
+        (e) => e.appointment.toString() === appointment._id.toString()
+      );
+      if (entry) {
+        if ([QUEUE_ENTRY_STATUS.PENDING, QUEUE_ENTRY_STATUS.SKIPPED].includes(entry.status)) {
+          QueueService.rejoinPatient(queue, entry, now);
+        } else {
+          const isLate =
+            entry.attendanceWindowClosesAt && now > entry.attendanceWindowClosesAt;
+          entry.checkedInAt = now;
+          entry.arrivalStatus = isLate ? 'arrived-late' : 'arrived-on-time';
+          entry.attendanceTimeoutApplied = true;
+        }
+        await queue.save({ session });
+      }
+    }
 
-console.log('✅ [RECEPTION] Patient marked as arrived');
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(
+      doctorId,
+      appointment.appointmentDate,
+      session
+    );
 
-// CRITICAL FIX: Recalculate queue — arrival status change may affect
-// downstream delays (e.g., patient was PENDING, now is arrived, downstream
-// grace period might apply differently)
-const recalculatedQueue = await QueueScheduler.recalculateQueue(
-  appointment.doctor._id || appointment.doctor,
-  appointment.appointmentDate,
-  session
-);
+    const updatedAppointment = await Appointment.findById(appointment._id)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
 
-return { appointment, recalculatedQueue };
+    return { appointment: updatedAppointment || appointment, recalculatedQueue };
   });
 
-  // Broadcast AFTER transaction commits — notifies all clients that
-  // arrival status changed and queue positions/ETAs may have shifted
   broadcastQueueRecalculation({
-    doctorId: appointment.doctor._id || appointment.doctor,
+    doctorId,
     date: appointment.appointmentDate,
     queue: result.recalculatedQueue,
   });
@@ -270,15 +292,8 @@ return { appointment, recalculatedQueue };
 };
 
 // ---------------------------------------------------------------------
-// 5. Move Patient to Doctor Queue
+// 6. Move Patient to Doctor Queue
 // ---------------------------------------------------------------------
-/**
- * The deliberate gate between "arrived at reception" and "callable by the
- * doctor". A patient can be verified and checked-in while payment is still
- * being sorted out at the counter — they should not appear in the Doctor
- * Assistant's callable queue until reception explicitly releases them,
- * which we require to happen only after payment has been collected.
- */
 const moveToDoctorQueue = async (appointmentId) => {
   const appointment = await findAppointmentOr404(appointmentId);
 
@@ -289,30 +304,35 @@ const moveToDoctorQueue = async (appointmentId) => {
     throw new ApiError(400, 'Patient is already in the doctor queue.');
   }
   if (!appointment.payment) {
-    throw new ApiError(400, 'Please collect payment before moving the patient to the doctor queue.');
+    throw new ApiError(
+      400,
+      'Please collect payment before moving the patient to the doctor queue.'
+    );
   }
+
+  const doctorId = appointment.doctor._id || appointment.doctor;
 
   const result = await withTransaction(async (session) => {
     appointment.isInDoctorQueue = true;
     await appointment.save({ session });
 
-    // Defensive reset — the entry should already be 'waiting' from
-    // booking time, but this guarantees it regardless of prior state.
     await updateQueueEntry(appointment, { status: QUEUE_ENTRY_STATUS.WAITING }, session);
 
-    // Recalculate queue to update positions/ETAs for all downstream patients
     const recalculatedQueue = await QueueScheduler.recalculateQueue(
-      appointment.doctor._id || appointment.doctor,
+      doctorId,
       appointment.appointmentDate,
       session
     );
 
-    return { appointment, recalculatedQueue };
+    const updatedAppointment = await Appointment.findById(appointment._id)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
+
+    return { appointment: updatedAppointment || appointment, recalculatedQueue };
   });
 
-  // Broadcast AFTER transaction commits — notifies doctor assistant that queue changed
   broadcastQueueRecalculation({
-    doctorId: appointment.doctor._id || appointment.doctor,
+    doctorId,
     date: appointment.appointmentDate,
     queue: result.recalculatedQueue,
   });
@@ -321,7 +341,7 @@ const moveToDoctorQueue = async (appointmentId) => {
 };
 
 // ---------------------------------------------------------------------
-// 6. Update appointment status (Reception-permitted transitions only)
+// 7. Update appointment status (Cancel or Mark No-show)
 // ---------------------------------------------------------------------
 const updateStatus = async (appointmentId, receptionistId, { status, reason }) => {
   const appointment = await findAppointmentOr404(appointmentId);
@@ -331,14 +351,25 @@ const updateStatus = async (appointmentId, receptionistId, { status, reason }) =
   }
 
   const doctorId = appointment.doctor._id || appointment.doctor;
+  const now = getHospitalNow();
 
   const result = await withTransaction(async (session) => {
     appointment.status = status;
     appointment.isInDoctorQueue = false;
+    appointment.queuePosition = null;
+    appointment.estimatedConsultationStartTime = null;
+    appointment.estimatedConsultationEndTime = null;
+    appointment.recommendedArrivalTime = null;
 
     if (status === APPOINTMENT_STATUS.CANCELLED) {
       appointment.cancelledBy = receptionistId;
       appointment.cancellationReason = reason || null;
+      appointment.cancelledAt = now;
+      appointment.timingStatus = 'cancelled';
+      appointment.statusLabel = 'Cancelled';
+    } else {
+      appointment.timingStatus = 'no-show';
+      appointment.statusLabel = 'No Show';
     }
 
     await appointment.save({ session });
@@ -348,22 +379,31 @@ const updateStatus = async (appointmentId, receptionistId, { status, reason }) =
         ? QUEUE_ENTRY_STATUS.SKIPPED
         : QUEUE_ENTRY_STATUS.NO_SHOW;
 
-    await updateQueueEntry(appointment, { status: queueEntryStatus }, session);
+    await updateQueueEntry(
+      appointment,
+      {
+        status: queueEntryStatus,
+        delayReason: status === APPOINTMENT_STATUS.CANCELLED ? 'cancelled' : 'no-show',
+        queuePosition: null,
+        estimatedConsultationStartTime: null,
+        estimatedConsultationEndTime: null,
+      },
+      session
+    );
 
-    // Removing this patient from the waiting pool (cancelled or no-show)
-    // moves everyone still behind them up one position — recalculate to update all ETAs
     const recalculatedQueue = await QueueScheduler.recalculateQueue(
       doctorId,
       appointment.appointmentDate,
       session
     );
 
-    return { appointment, recalculatedQueue };
+    const updatedAppointment = await Appointment.findById(appointment._id)
+      .populate(APPOINTMENT_POPULATE)
+      .session(session);
+
+    return { appointment: updatedAppointment || appointment, recalculatedQueue };
   });
 
-  // Broadcast only AFTER the transaction has actually committed — never
-  // from inside the callback above, where a later error in the same
-  // transaction could still roll back the very change we just announced.
   broadcastQueueRecalculation({
     doctorId,
     date: appointment.appointmentDate,
