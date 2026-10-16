@@ -149,4 +149,23 @@ class QueueService {
   }
 }
 
+const Queue = require('./queue.model');
+const crypto = require('crypto');
+
+class QueueService {
+  static generateBookingNumber() {
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const randomPart = crypto.randomBytes(4).toString('hex').toUpperCase();
+
+    return `UG-${timestamp}-${randomPart}`;
+  }
+
+  // Keep your other methods inside this class:
+  // getNextTokenNumber()
+  // computeScheduledSlot()
+  // recalculateQueue()
+}
+
 module.exports = QueueService;
+
+
