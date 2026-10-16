@@ -1,124 +1,79 @@
 const { WEEKDAYS } = require('../constants/enums');
 
-const IST_OFFSET_MINUTES = 330;
-const MINUTE_MS = 60 * 1000;
-
-const normalizeDateOnly = (value) => {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    throw new Error('Invalid date');
-  }
-
-  // Appointment dates are stored as UTC midnight representing
-  // the selected IST calendar date.
-  return new Date(Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate()
-  ));
+/** Strips the time component, returning a Date at UTC midnight. Lets us
+ * compare/store "appointment day" as a simple equality check. */
+const normalizeDateOnly = (date) => {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
 };
 
-const getWeekdayName = (value) => {
-  const date = normalizeDateOnly(value);
-  const sundayFirst = date.getUTCDay();
-  const mondayFirst = (sundayFirst + 6) % 7;
-
-  return WEEKDAYS[mondayFirst];
+/** Maps a Date to one of WEEKDAYS ('monday'..'sunday'), matching the
+ * lowercase day names used in Doctor.availability. */
+const getWeekdayName = (date) => {
+  const jsDay = new Date(date).getUTCDay(); // 0=Sunday..6=Saturday
+  const mondayFirstIndex = jsDay === 0 ? 6 : jsDay - 1;
+  return WEEKDAYS[mondayFirstIndex];
 };
 
-const timeToMinutes = (time) => {
-  if (typeof time !== 'string' || !/^\d{2}:\d{2}$/.test(time)) {
-    throw new Error(`Invalid time "${time}". Expected HH:mm.`);
-  }
-
-  const [hours, minutes] = time.split(':').map(Number);
-
-  if (hours > 23 || minutes > 59) {
-    throw new Error(`Invalid time "${time}".`);
-  }
-
-  return hours * 60 + minutes;
+const timeToMinutes = (timeStr) => {
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + m;
 };
 
 const minutesToTime = (totalMinutes) => {
-  const wrapped = ((totalMinutes % 1440) + 1440) % 1440;
-  const hours = Math.floor(wrapped / 60);
-  const minutes = wrapped % 60;
-
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  const wrapped = ((totalMinutes % 1440) + 1440) % 1440; // wrap safely within a day
+  const h = Math.floor(wrapped / 60);
+  const m = wrapped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
-const addMinutesToTime = (time, minutes) =>
-  minutesToTime(timeToMinutes(time) + minutes);
+const addMinutesToTime = (timeStr, minutesToAdd) =>
+  minutesToTime(timeToMinutes(timeStr) + minutesToAdd);
 
-const isTimeAfter = (a, b) =>
-  timeToMinutes(a) > timeToMinutes(b);
+const isTimeAfter = (a, b) => timeToMinutes(a) > timeToMinutes(b);
 
-/**
- * Convert an IST wall-clock time on an appointment date to a real Date.
- *
- * Example:
- * appointment date = 2026-10-16
- * time = 09:00 IST
- * resulting instant = 2026-10-16T03:30:00.000Z
- *
- * Do not use getHours()/setHours() on this result to read IST time.
- */
-const combineDateAndTime = (dateValue, time) => {
-  const date = normalizeDateOnly(dateValue);
-  const minutes = timeToMinutes(time);
-
-  return new Date(
-    date.getTime() + (minutes - IST_OFFSET_MINUTES) * MINUTE_MS
-  );
+/** Combines a date-only Date with an "HH:mm" string into one full Date. */
+const combineDateAndTime = (date, timeStr) => {
+  const d = normalizeDateOnly(date);
+  const [h, m] = timeStr.split(':').map(Number);
+  d.setUTCHours(h, m, 0, 0);
+  return d;
 };
 
-/**
- * Current real instant. Safe to store in MongoDB Date fields.
- */
-const getHospitalNow = () => new Date();
+/** All hospitals in this system are in India (IST, UTC+5:30 — India
+ * does not observe DST, so this is a fixed offset, not a rule-based
+ * timezone lookup). Doctor.availability windows ("09:00"–"17:00") are
+ * entered by hospital/admin staff meaning LOCAL wall-clock time, so
+ * "now" must be computed in that same timezone — not the server's raw
+ * UTC clock — or every same-day comparison against them is wrong by
+ * ~5.5 hours. (This was exactly the bug: a 1pm IST booking read as
+ * 07:30 UTC, which looked like it was BEFORE the clinic's 09:00
+ * opening, so the stale token-grid time never got corrected to "now".) */
+const IST_OFFSET_MINUTES = 5 * 60 + 30;
 
-/**
- * Read the current IST wall-clock time.
- */
+/** The current moment, shifted so reading its UTC getters (getUTCHours,
+ * getUTCMinutes, and normalizeDateOnly's setUTCHours reset) yields IST
+ * wall-clock values instead of true UTC ones. Use this instead of
+ * `new Date()` anywhere "now" needs to be compared against a
+ * Doctor.availability time string or against an appointment's calendar
+ * day. */
+const getHospitalNow = () => new Date(Date.now() + IST_OFFSET_MINUTES * 60 * 1000);
+
+/** "HH:mm" for right now (in hospital-local/IST time), rounded UP to
+ * the next 5-minute mark so slot times look intentional ("13:10")
+ * rather than a random current second ("13:07"). */
 const getCurrentTimeString = () => {
-  const ist = new Date(Date.now() + IST_OFFSET_MINUTES * MINUTE_MS);
-  const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-
-  // Round up to the next five-minute boundary.
-  return minutesToTime(Math.ceil(minutes / 5) * 5);
+  const now = getHospitalNow();
+  const rawMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const roundedMinutes = Math.ceil(rawMinutes / 5) * 5;
+  return minutesToTime(roundedMinutes % 1440);
 };
 
-/**
- * Get the current IST calendar date represented as UTC midnight.
- */
-const getHospitalToday = () => {
-  const ist = new Date(Date.now() + IST_OFFSET_MINUTES * MINUTE_MS);
-
-  return new Date(Date.UTC(
-    ist.getUTCFullYear(),
-    ist.getUTCMonth(),
-    ist.getUTCDate()
-  ));
-};
-
-const isSameUTCDate = (a, b) =>
-  normalizeDateOnly(a).getTime() === normalizeDateOnly(b).getTime();
-
-/**
- * Format a real instant as IST HH:mm.
- */
-const formatISTTime = (value) => {
-  const date = new Date(new Date(value).getTime() + IST_OFFSET_MINUTES * MINUTE_MS);
-
-  return `${String(date.getUTCHours()).padStart(2, '0')}:${String(
-    date.getUTCMinutes()
-  ).padStart(2, '0')}`;
-};
+/** Whether two dates fall on the same calendar day (UTC, ignoring time). */
+const isSameUTCDate = (a, b) => normalizeDateOnly(a).getTime() === normalizeDateOnly(b).getTime();
 
 module.exports = {
-  IST_OFFSET_MINUTES,
   normalizeDateOnly,
   getWeekdayName,
   timeToMinutes,
@@ -128,7 +83,5 @@ module.exports = {
   combineDateAndTime,
   getCurrentTimeString,
   getHospitalNow,
-  getHospitalToday,
   isSameUTCDate,
-  formatISTTime,
 };
