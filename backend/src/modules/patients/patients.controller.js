@@ -13,7 +13,9 @@ const bookAppointment = asyncHandler(async (req, res) => {
         appointment: result.appointment,
         bookingNumber: result.bookingNumber,
         queueNumber: result.queueNumber,
-        estimatedReportingTime: result.estimatedReportingTime,
+        estimatedReportingTime: result.estimatedConsultationStartTime,
+        estimatedConsultationStartTime: result.estimatedConsultationStartTime,
+        estimatedConsultationEndTime: result.estimatedConsultationEndTime,
         queueStatus: result.queueStatus,
       },
       'Appointment booked successfully.'

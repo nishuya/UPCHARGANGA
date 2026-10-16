@@ -5,15 +5,20 @@ const AttendanceTimeoutService = require('./attendance.timeout.service');
 const ApiError = require('../../errors/ApiError');
 const { generateBookingNumber } = require('../../utils/booking.util');
 const {
+  allocateNextTimeSlot,
+  resolveConsultationDuration,
+} = require('../../utils/slotAllocation.util');
+const {
   normalizeDateOnly,
   addMinutesToTime,
-  isTimeAfter,
   combineDateAndTime,
   getCurrentTimeString,
   getHospitalNow,
   isSameUTCDate,
 } = require('../../utils/datetime.util');
 const { APPOINTMENT_STATUS, QUEUE_ENTRY_STATUS, QUEUE_STATUS } = require('../../constants/enums');
+
+const SLOT_FREE_STATUSES = [APPOINTMENT_STATUS.CANCELLED, APPOINTMENT_STATUS.EXPIRED];
 
 /**
  * QueueService — the single owner of all queue DOMAIN logic: token
@@ -45,59 +50,47 @@ class QueueService {
     console.log('📊 [TOKEN] Getting next token for doctor:', doctorId, 'date:', date);
 
     try {
-      // Step 1: Try to increment if document exists
       let updated = await Queue.findOneAndUpdate(
         { doctor: doctorId, date },
         { $inc: { totalTokensIssued: 1 } },
         { new: true, session }
       );
 
-      // Step 2: If document doesn't exist, create it
       if (!updated) {
-        console.log('📊 [TOKEN] Queue document not found, creating new one');
-
-        // Fetch doctor to get hospital and department
         const Doctor = require('../doctors/doctors.model');
-        const doctor = await Doctor.findById(doctorId).select('hospital department');
+        const doctorQuery = Doctor.findById(doctorId).select('hospital department');
+        const doctor = session ? await doctorQuery.session(session) : await doctorQuery;
 
         if (!doctor) {
           throw new Error('Doctor not found');
         }
 
-        console.log('📊 [TOKEN] Doctor found - hospital:', doctor.hospital, 'department:', doctor.department);
-
-        // Create the Queue document
-        let created;
         try {
-          const result = await Queue.create([{
-            hospital: doctor.hospital,
-            department: doctor.department,
-            doctor: doctorId,
-            date,
-            totalTokensIssued: 1,
-            status: 'active',
-            entries: []
-          }]);
-
-          created = result[0];
-          console.log('✅ [TOKEN] Queue document created:', created._id);
-        } catch (createErr) {
-          console.error('❌ [TOKEN] Queue creation failed:', createErr.message);
-          throw createErr;
-        }
-
-        // Verify creation by finding it
-        if (created) {
+          const [created] = await Queue.create(
+            [
+              {
+                hospital: doctor.hospital,
+                department: doctor.department,
+                doctor: doctorId,
+                date,
+                totalTokensIssued: 1,
+                status: 'active',
+                entries: [],
+              },
+            ],
+            { session }
+          );
           updated = created;
-          console.log('✅ [TOKEN] Using newly created document');
-        } else {
-          // Fallback: try to find it again without session
-          updated = await Queue.findOne({ doctor: doctorId, date });
-          if (updated) {
-            console.log('✅ [TOKEN] Found Queue after creation');
+        } catch (createErr) {
+          // Concurrent first booking: the other request won the unique index.
+          if (createErr.code === 11000) {
+            updated = await Queue.findOneAndUpdate(
+              { doctor: doctorId, date },
+              { $inc: { totalTokensIssued: 1 } },
+              { new: true, session }
+            );
           } else {
-            console.error('❌ [TOKEN] Could not find Queue after creation');
-            throw new Error('Failed to create or find Queue document');
+            throw createErr;
           }
         }
       }
@@ -116,51 +109,60 @@ class QueueService {
   }
 
   /**
-   * Pure function, no DB access — derives a scheduled {start, end} time
-   * slot from a doctor's day-schedule and a token number. O(1).
-   * Throws if the computed slot would run past the doctor's configured
-   * end time (a safety net beyond the maxPatients capacity check).
+   * Derives the next unique {start, end} slot from the doctor's session,
+   * already-assigned appointments, token order, and (for today) current time.
+   *
+   * Same-day bookings previously all snapped independently to "now", which
+   * assigned the same clock time to multiple patients. Occupying end times
+   * must be supplied so each new booking starts when the previous one ends.
    */
-  static computeScheduledSlot(daySchedule, tokenNumber, appointmentDate) {
-    const gridStart = addMinutesToTime(
-      daySchedule.startTime,
-      (tokenNumber - 1) * daySchedule.slotDurationMinutes
-    );
+  static computeScheduledSlot(daySchedule, tokenNumber, appointmentDate, options = {}) {
+    const duration = resolveConsultationDuration(daySchedule);
+    const gridStart = addMinutesToTime(daySchedule.startTime, (tokenNumber - 1) * duration);
+    const now = options.now || getHospitalNow();
+    const isToday = Boolean(appointmentDate && isSameUTCDate(appointmentDate, now));
+    const nowTimeString = options.nowTimeString ?? (isToday ? getCurrentTimeString() : null);
 
     console.log('⏰ [SLOT] Computing slot for token:', tokenNumber);
     console.log('   Start time:', daySchedule.startTime);
-    console.log('   Slot duration:', daySchedule.slotDurationMinutes, 'minutes');
+    console.log('   Slot duration:', duration, 'minutes');
     console.log('   Grid start:', gridStart);
     console.log('   End time limit:', daySchedule.endTime);
+    console.log('   Occupying ends:', options.occupyingEndTimes || []);
+    console.log('   Same-day booking - current time:', nowTimeString);
 
-    let start = gridStart;
-    if (appointmentDate && isSameUTCDate(appointmentDate, getHospitalNow())) {
-      const now = getCurrentTimeString();
-      console.log('   Same-day booking - current time:', now);
-      if (isTimeAfter(now, gridStart)) {
-        console.log('   Current time is after grid start, adjusting to now');
-        start = now;
-      }
-    }
+    const slot = allocateNextTimeSlot({
+      startTime: daySchedule.startTime,
+      endTime: daySchedule.endTime,
+      durationMinutes: duration,
+      occupyingEndTimes: options.occupyingEndTimes || [],
+      gridStartTime: gridStart,
+      isToday,
+      nowTimeString,
+    });
 
-    const end = addMinutesToTime(start, daySchedule.slotDurationMinutes);
+    console.log('   Final slot - start:', slot.start, 'end:', slot.end);
+    return slot;
+  }
 
-    console.log('   Final slot - start:', start, 'end:', end);
+  /**
+   * Reads already-booked slots for this doctor/date (inside the caller's
+   * transaction) and allocates the next unique consultation window.
+   */
+  static async allocateScheduledSlot(daySchedule, tokenNumber, appointmentDate, { doctorId, session, nowTimeString } = {}) {
+    const occupyingQuery = Appointment.find({
+      doctor: doctorId,
+      appointmentDate: normalizeDateOnly(appointmentDate),
+      isActive: true,
+      status: { $nin: SLOT_FREE_STATUSES },
+    }).select('timeSlot');
 
-    // CRITICAL FIX: Handle endTime "00:00" as end-of-day (24:00)
-    // Midnight (00:00) in a schedule means "until end of day", not "until start of day"
-    const effectiveEndTime = daySchedule.endTime === '00:00' ? '24:00' : daySchedule.endTime;
-    const isEndAfterLimit = isTimeAfter(end, effectiveEndTime);
+    const occupying = session ? await occupyingQuery.session(session).lean() : await occupyingQuery.lean();
 
-    console.log('   Effective end time limit:', effectiveEndTime);
-    console.log('   Is end after endTime?', isEndAfterLimit);
-
-    if (isEndAfterLimit) {
-      console.error(`❌ [SLOT] Slot ${start}-${end} extends past doctor's end time ${effectiveEndTime}`);
-      throw new ApiError(409, 'All slots for this doctor on the selected date are fully booked.');
-    }
-
-    return { start, end };
+    return QueueService.computeScheduledSlot(daySchedule, tokenNumber, appointmentDate, {
+      occupyingEndTimes: occupying.map((appointment) => appointment.timeSlot?.end).filter(Boolean),
+      nowTimeString,
+    });
   }
 
   static generateBookingNumber(doctorId, date, tokenNumber) {
@@ -334,8 +336,6 @@ class QueueService {
     const slots = await (session ? slotsQuery.session(session) : slotsQuery).lean();
     const slotById = new Map(slots.map((a) => [a._id.toString(), a.timeSlot]));
 
-    const avgMinutes = queue.averageConsultationMinutes;
-
     // Track which appointments to update so we can sync estimated times
     const appointmentsToUpdate = [];
 
@@ -352,16 +352,12 @@ class QueueService {
         );
       }
 
-      // Calculate the estimated consultation time based on queue position.
-      // Formula: each patient ahead takes avgMinutes, so patient at position N
-      // starts at: scheduled_time_of_patient_1 + (N-1) * avgMinutes
-      //
-      // For this entry, we compute its slot as:
-      // - Start: earliest scheduled slot + (position - 1) * avgMinutes
-      // - End: Start + avgMinutes
-      const firstScheduledStart = combineDateAndTime(date, timeSlot.start);
-      const estStart = new Date(firstScheduledStart.getTime() + (position - 1) * avgMinutes * 60000);
-      const estEnd = new Date(estStart.getTime() + avgMinutes * 60000);
+      // Use the appointment's allocated timeSlot. Do not offset again by
+      // (position - 1) * duration — that double-shifted sequential bookings
+      // and, when combined with the old "snap all to now" bug, hid duplicates
+      // in estimates while timeSlot.start stayed identical.
+      const estStart = combineDateAndTime(date, timeSlot.start);
+      const estEnd = combineDateAndTime(date, timeSlot.end);
 
       // Store persistent estimated consultation time for patient display
       entry.estimatedConsultationStartTime = estStart;

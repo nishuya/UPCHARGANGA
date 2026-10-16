@@ -150,8 +150,27 @@ const bookAppointment = async (patientId, payload) => {
     throw new ApiError(400, 'This doctor is unavailable today. Please choose another date.');
   }
 
+  const runBookingTransaction = async (work) => {
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await withTransaction(work);
+      } catch (err) {
+        lastError = err;
+        const retryable =
+          err?.errorLabels?.includes('TransientTransactionError') ||
+          err?.code === 112 ||
+          err?.codeName === 'WriteConflict';
+        if (!retryable || attempt === 3) {
+          throw err;
+        }
+      }
+    }
+    throw lastError;
+  };
+
   // --- From here on, every decision is delegated to QueueService ---
-  const result = await withTransaction(async (session) => {
+  const result = await runBookingTransaction(async (session) => {
     // CRITICAL: Check slot availability BEFORE incrementing token counter
     // Count ACTIVE (non-cancelled) appointments for this doctor on this date
     const activeAppointmentCount = await Appointment.countDocuments({
@@ -179,7 +198,12 @@ const bookAppointment = async (patientId, payload) => {
     // ATOMIC: Get next token within the transaction to prevent race conditions
     const tokenNumber = await QueueService.getNextTokenNumber(chain.doctor._id, normalizedDate, session);
 
-    const timeSlot = QueueService.computeScheduledSlot(daySchedule, tokenNumber, normalizedDate);
+    const timeSlot = await QueueService.allocateScheduledSlot(
+      daySchedule,
+      tokenNumber,
+      normalizedDate,
+      { doctorId: chain.doctor._id, session }
+    );
     const bookingNumber = QueueService.generateBookingNumber(chain.doctor._id, normalizedDate, tokenNumber);
 
     // Calculate cutoff time: appointment start time + CONSULTATION_WINDOW_HOURS
