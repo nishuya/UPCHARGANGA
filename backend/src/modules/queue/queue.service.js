@@ -1,551 +1,151 @@
-const Appointment = require('../appointments/appointments.model');
+
 const Queue = require('./queue.model');
-const QueueScheduler = require('./queue.scheduler.service');
-const AttendanceTimeoutService = require('./attendance.timeout.service');
-const ApiError = require('../../errors/ApiError');
-const { generateBookingNumber } = require('../../utils/booking.util');
-const {
-  normalizeDateOnly,
-  addMinutesToTime,
-  isTimeAfter,
-  combineDateAndTime,
-  getCurrentTimeString,
-  getHospitalNow,
-  isSameUTCDate,
-} = require('../../utils/datetime.util');
-const { APPOINTMENT_STATUS, QUEUE_ENTRY_STATUS, QUEUE_STATUS } = require('../../constants/enums');
 
-/**
- * QueueService — the single owner of all queue DOMAIN logic: token
- * assignment, slot math, booking-number generation, and — the core of
- * this design — recalculating every waiting patient's position, ETA, and
- * wait time whenever the queue's composition changes.
- *
- * CLEAN ARCHITECTURE ROLE: module services (patients, reception,
- * doctorAssistant) are ORCHESTRATORS — they validate their own
- * role-specific concerns (e.g. "does this doctor belong to my hospital?",
- * "has this patient paid?") and then delegate every actual queue-mechanics
- * decision to this class. This means there is exactly ONE place in the
- * codebase that knows how a token number, an ETA, or a queue position is
- * computed — previously this logic was duplicated (and drifting) across
- * three different module services.
- *
- * All methods are static: QueueService is stateless by design — every
- * fact it needs lives in the database, not in an instance — so it never
- * needs to be constructed, and is trivially reusable from any module.
- */
 class QueueService {
-  // =====================================================================
-  // Token & slot assignment — used once, at booking time
-  // =====================================================================
-
-  /** Next sequential token for a doctor/date using ATOMIC increment.
-   * Avoids MongoDB transaction upsert conflicts by using separate operations. */
-  static async getNextTokenNumber(doctorId, date, session) {
-    console.log('📊 [TOKEN] Getting next token for doctor:', doctorId, 'date:', date);
-
-    try {
-      // Step 1: Try to increment if document exists
-      let updated = await Queue.findOneAndUpdate(
-        { doctor: doctorId, date },
-        { $inc: { totalTokensIssued: 1 } },
-        { new: true, session }
-      );
-
-      // Step 2: If document doesn't exist, create it
-      if (!updated) {
-        console.log('📊 [TOKEN] Queue document not found, creating new one');
-
-        // Fetch doctor to get hospital and department
-        const Doctor = require('../doctors/doctors.model');
-        const doctor = await Doctor.findById(doctorId).select('hospital department');
-
-        if (!doctor) {
-          throw new Error('Doctor not found');
-        }
-
-        console.log('📊 [TOKEN] Doctor found - hospital:', doctor.hospital, 'department:', doctor.department);
-
-        // Create the Queue document
-        let created;
-        try {
-          const result = await Queue.create([{
-            hospital: doctor.hospital,
-            department: doctor.department,
-            doctor: doctorId,
-            date,
-            totalTokensIssued: 1,
-            status: 'active',
-            entries: []
-          }]);
-
-          created = result[0];
-          console.log('✅ [TOKEN] Queue document created:', created._id);
-        } catch (createErr) {
-          console.error('❌ [TOKEN] Queue creation failed:', createErr.message);
-          throw createErr;
-        }
-
-        // Verify creation by finding it
-        if (created) {
-          updated = created;
-          console.log('✅ [TOKEN] Using newly created document');
-        } else {
-          // Fallback: try to find it again without session
-          updated = await Queue.findOne({ doctor: doctorId, date });
-          if (updated) {
-            console.log('✅ [TOKEN] Found Queue after creation');
-          } else {
-            console.error('❌ [TOKEN] Could not find Queue after creation');
-            throw new Error('Failed to create or find Queue document');
-          }
-        }
-      }
-
-      if (!updated || !updated.totalTokensIssued) {
-        throw new Error('Invalid Queue document state');
-      }
-
-      const nextToken = updated.totalTokensIssued;
-      console.log('✅ [TOKEN] Assigned token number:', nextToken);
-      return nextToken;
-    } catch (err) {
-      console.error('❌ [TOKEN] Error assigning token:', err.message);
-      throw err;
-    }
-  }
-
   /**
-   * Pure function, no DB access — derives a scheduled {start, end} time
-   * slot from a doctor's day-schedule and a token number. O(1).
-   * Throws if the computed slot would run past the doctor's configured
-   * end time (a safety net beyond the maxPatients capacity check).
+   * Atomically increments the token counter for a doctor on a date.
+   * Requires a unique index on { doctor: 1, date: 1 }.
    */
-  static computeScheduledSlot(daySchedule, tokenNumber, appointmentDate) {
-    const gridStart = addMinutesToTime(
-      daySchedule.startTime,
-      (tokenNumber - 1) * daySchedule.slotDurationMinutes
-    );
-
-    console.log('⏰ [SLOT] Computing slot for token:', tokenNumber);
-    console.log('   Start time:', daySchedule.startTime);
-    console.log('   Slot duration:', daySchedule.slotDurationMinutes, 'minutes');
-    console.log('   Grid start:', gridStart);
-    console.log('   End time limit:', daySchedule.endTime);
-
-    let start = gridStart;
-    if (appointmentDate && isSameUTCDate(appointmentDate, getHospitalNow())) {
-      const now = getCurrentTimeString();
-      console.log('   Same-day booking - current time:', now);
-      if (isTimeAfter(now, gridStart)) {
-        console.log('   Current time is after grid start, adjusting to now');
-        start = now;
-      }
-    }
-
-    const end = addMinutesToTime(start, daySchedule.slotDurationMinutes);
-
-    console.log('   Final slot - start:', start, 'end:', end);
-
-    // CRITICAL FIX: Handle endTime "00:00" as end-of-day (24:00)
-    // Midnight (00:00) in a schedule means "until end of day", not "until start of day"
-    const effectiveEndTime = daySchedule.endTime === '00:00' ? '24:00' : daySchedule.endTime;
-    const isEndAfterLimit = isTimeAfter(end, effectiveEndTime);
-
-    console.log('   Effective end time limit:', effectiveEndTime);
-    console.log('   Is end after endTime?', isEndAfterLimit);
-
-    if (isEndAfterLimit) {
-      console.error(`❌ [SLOT] Slot ${start}-${end} extends past doctor's end time ${effectiveEndTime}`);
-      throw new ApiError(409, 'All slots for this doctor on the selected date are fully booked.');
-    }
-
-    return { start, end };
-  }
-
-  static generateBookingNumber(doctorId, date, tokenNumber) {
-    return generateBookingNumber(doctorId, date, tokenNumber);
-  }
-
-  // =====================================================================
-  // Queue document + entry creation
-  // =====================================================================
-
-  /**
-   * Atomically upserts the doctor's Queue document for the date and
-   * pushes a new WAITING entry. `averageConsultationMinutes` is only
-   * applied via $setOnInsert — i.e. it seeds a BRAND NEW queue's starting
-   * assumption, and is never overwritten on an existing queue (which may
-   * already have a live, adapted average — see setAverageConsultationMinutes
-   * and applyCompletionToAverage below for how it's "configurable").
-   *
-   * The entry's estimated consultation time is set based on the scheduled slot
-   * and will be recalculated only when queue composition meaningfully changes.
-   */
-  static async addEntry(
-    { hospitalId, departmentId, doctorId, date, appointmentId, patientId, tokenNumber, averageConsultationMinutes, timeSlot },
-    session
-  ) {
-    console.log('[QUEUE] Adding entry - token:', tokenNumber, 'timeSlot:', timeSlot);
-
-    // Create new queue entry with scheduled times
-    const newEntry = {
-      appointment: appointmentId,
-      patient: patientId,
-      tokenNumber,
-      status: QUEUE_ENTRY_STATUS.WAITING,
-      scheduledStartTime: timeSlot.start,
-      scheduledEndTime: timeSlot.end,
-      // NEW: Store estimated consultation time for patient display (persistent, not continuously updated)
-      estimatedConsultationStartTime: combineDateAndTime(date, timeSlot.start),
-      estimatedConsultationEndTime: combineDateAndTime(date, timeSlot.end),
-      // Legacy fields kept for internal use (not shown to patient)
-      estimatedStartTime: timeSlot.start,
-      estimatedEndTime: timeSlot.end,
+  static async getNextTokenNumber(doctorId, appointmentDate, session) {
+    const filter = {
+      doctor: doctorId,
+      date: appointmentDate,
     };
 
-    // Initialize attendance window (5 minutes after scheduled start)
-    const now = getHospitalNow();
-    const attendanceWindowCloses = addMinutesToTime(timeSlot.start, 5);
-    const attendanceWindowClosesDateTime = combineDateAndTime(date, attendanceWindowCloses);
+    const options = {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    };
 
-    newEntry.attendanceWindowClosesAt = attendanceWindowClosesDateTime;
-    newEntry.arrivalStatus = 'not-arrived';
-    newEntry.attendanceTimeoutApplied = false;
+    if (session) {
+      options.session = session;
+    }
 
-    console.log('[QUEUE] Attendance window closes at:', attendanceWindowClosesDateTime);
-    console.log('[QUEUE] Estimated consultation time:', newEntry.estimatedConsultationStartTime, '-', newEntry.estimatedConsultationEndTime);
-
-    // Upsert queue document
     const queue = await Queue.findOneAndUpdate(
-      { doctor: doctorId, date },
+      filter,
       {
+        $inc: { totalTokensIssued: 1 },
         $setOnInsert: {
-          hospital: hospitalId,
-          department: departmentId,
           doctor: doctorId,
-          date,
-          totalTokensIssued: 1,
-          averageConsultationMinutes: averageConsultationMinutes || 15,
-        },
-        $push: {
-          entries: newEntry,
+          date: appointmentDate,
         },
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true, session }
+      options
     );
 
-    console.log('[QUEUE] Entry added, now scheduling...');
-
-    // Recalculate queue to ensure correct sequential slots
-    await QueueScheduler.recalculateQueue(doctorId, date, session);
-
-    return queue;
-  }
-
-  // =====================================================================
-  // Configurable average consultation time
-  // =====================================================================
-
-  /**
-   * Manual override — e.g. an admin/assistant knows this doctor is
-   * running a slower/faster clinic today. Immediately triggers a full
-   * recalculation since it changes every remaining patient's ETA.
-   */
-  static async setAverageConsultationMinutes(doctorId, date, minutes) {
-    if (!Number.isFinite(minutes) || minutes < 1) {
-      throw new ApiError(400, 'averageConsultationMinutes must be a positive number.');
-    }
-    const queue = await Queue.findOne({ doctor: doctorId, date });
     if (!queue) {
-      throw new ApiError(404, 'No queue exists yet for this doctor on this date.');
+      throw new Error('Unable to allocate appointment token');
     }
-    queue.averageConsultationMinutes = minutes;
-    await queue.save();
-    return QueueService.recalculateQueue(doctorId, date);
+
+    return queue.totalTokensIssued;
   }
 
   /**
-   * Automatic adjustment — applies an exponential moving average (recent
-   * consultations count for more than older ones) so the estimate adapts
-   * across the day. 0.7/0.3 split is a deliberate choice: responsive
-   * enough to reflect today's actual pace within 2-3 consultations,
-   * stable enough that one unusually long/short visit doesn't whipsaw
-   * every other patient's ETA.
+   * Computes a scheduled slot from the doctor's assigned schedule.
+   * daySchedule must contain startTime, endTime, and slotDurationMinutes.
+   *
+   * Returns { start, end } for Appointment.timeSlot.
    */
-  static applyCompletionToAverage(queue, actualMinutes) {
-    const clamped = Math.max(actualMinutes, 1);
-    queue.averageConsultationMinutes = Math.round(
-      queue.averageConsultationMinutes * 0.7 + clamped * 0.3
+  static computeScheduledSlot(daySchedule, tokenNumber, appointmentDate) {
+    if (
+      !daySchedule ||
+      !daySchedule.startTime ||
+      !daySchedule.endTime ||
+      !Number.isInteger(Number(tokenNumber)) ||
+      Number(tokenNumber) < 1
+    ) {
+      throw new Error('Invalid doctor schedule or token number');
+    }
+
+    const duration = Number(daySchedule.slotDurationMinutes || 15);
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error('Invalid slot duration in doctor schedule');
+    }
+
+    const toMinutes = (time) => {
+      const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+
+      if (!match) {
+        throw new Error(`Invalid schedule time: ${time}`);
+      }
+
+      return Number(match[1]) * 60 + Number(match[2]);
+    };
+
+    const startMinutes = toMinutes(daySchedule.startTime);
+    const endMinutes = toMinutes(daySchedule.endTime);
+
+    if (endMinutes <= startMinutes) {
+      throw new Error('Doctor schedule end time must be after start time');
+    }
+
+    let slotIndex = Number(tokenNumber) - 1;
+
+    // Use India Standard Time to determine whether today's slot has passed.
+    const now = new Date();
+    const istNow = new Date(now.getTime() + 330 * 60 * 1000);
+    const today = `${istNow.getUTCFullYear()}-${String(
+      istNow.getUTCMonth() + 1
+    ).padStart(2, '0')}-${String(istNow.getUTCDate()).padStart(2, '0')}`;
+
+    const appointmentDay = new Date(appointmentDate);
+    const istAppointmentDay = new Date(
+      appointmentDay.getTime() + 330 * 60 * 1000
     );
-  }
+    const requestedDay = `${istAppointmentDay.getUTCFullYear()}-${String(
+      istAppointmentDay.getUTCMonth() + 1
+    ).padStart(2, '0')}-${String(istAppointmentDay.getUTCDate()).padStart(
+      2,
+      '0'
+    )}`;
 
-  // =====================================================================
-  // THE recalculation engine
-  // =====================================================================
+    if (requestedDay === today) {
+      const currentMinutes =
+        istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
 
-  /**
-   * Recomputes the estimated consultation time slot for every still-WAITING
-   * entry in a doctor's queue. Called after any event that changes queue
-   * composition — a completion, a skip, or a cancellation.
-   *
-   * CRITICAL: This calculation is based ONLY on queue position and the
-   * doctor's consultation duration. It does NOT include:
-   * - Delay tracking or "late by X minutes"
-   * - Early completion tracking or "early by X minutes"
-   * - Running behind / ahead status
-   *
-   * The estimated time shown to patients is a simple time range:
-   * "Your consultation is estimated for 12:30 PM – 12:45 PM"
-   *
-   * Deliberately applies to ALL waiting entries, not just ones Reception
-   * has released (isInDoctorQueue) — queue POSITION reflects booking
-   * order and is meaningful even to a patient who hasn't arrived yet;
-   * "who's callable right now" is a separate, stricter concern (see
-   * callNext below).
-   *
-   * See the complexity analysis in the accompanying documentation for a
-   * full breakdown — summary: O(n log n) time, O(1) additional DB round
-   * trips (never N+1), where n = patients waiting for this doctor today.
-   */
-  static async recalculateQueue(doctorId, date, session) {
-    const queueQuery = Queue.findOne({ doctor: doctorId, date });
-    const queue = session ? await queueQuery.session(session) : await queueQuery;
-    if (!queue) return null;
+      // Skip schedule intervals that have already passed.
+      if (currentMinutes >= startMinutes) {
+        const elapsedSlots = Math.floor(
+          (currentMinutes - startMinutes) / duration
+        ) + 1;
 
-    const waiting = queue.entries
-      .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING)
-      .sort((a, b) => a.tokenNumber - b.tokenNumber);
-
-    if (waiting.length === 0) return queue;
-
-    // Fetch each waiting entry's originally scheduled slot in ONE query
-    // (not populate-on-the-queue-then-save, which risks Mongoose
-    // re-serializing populated subdocuments incorrectly on save; and not
-    // N+1 individual lookups either).
-    //
-    // MUST use the same session as the caller: bookAppointment calls this
-    // mid-transaction, right after creating the Appointment — without
-    // `.session(session)` here, this query can't see that just-created,
-    // not-yet-committed document, `slots` comes back missing it, and
-    // `slotById.get(...)` returns undefined below.
-    const appointmentIds = waiting.map((e) => e.appointment);
-    const slotsQuery = Appointment.find({ _id: { $in: appointmentIds } }, 'timeSlot');
-    const slots = await (session ? slotsQuery.session(session) : slotsQuery).lean();
-    const slotById = new Map(slots.map((a) => [a._id.toString(), a.timeSlot]));
-
-    const avgMinutes = queue.averageConsultationMinutes;
-
-    // Track which appointments to update so we can sync estimated times
-    const appointmentsToUpdate = [];
-
-    waiting.forEach((entry, index) => {
-      const position = index + 1; // 1 = next to be called
-      const timeSlot = slotById.get(entry.appointment.toString());
-      if (!timeSlot) {
-        // Should be unreachable now that this query is session-aware, but
-        // fail loudly and specifically rather than crashing on `.start`
-        // of undefined if some future change reintroduces the gap.
-        throw new ApiError(
-          500,
-          `Queue recalculation couldn't find the scheduled time slot for appointment ${entry.appointment}.`
-        );
-      }
-
-      // Calculate the estimated consultation time based on queue position.
-      // Formula: each patient ahead takes avgMinutes, so patient at position N
-      // starts at: scheduled_time_of_patient_1 + (N-1) * avgMinutes
-      //
-      // For this entry, we compute its slot as:
-      // - Start: earliest scheduled slot + (position - 1) * avgMinutes
-      // - End: Start + avgMinutes
-      const firstScheduledStart = combineDateAndTime(date, timeSlot.start);
-      const estStart = new Date(firstScheduledStart.getTime() + (position - 1) * avgMinutes * 60000);
-      const estEnd = new Date(estStart.getTime() + avgMinutes * 60000);
-
-      // Store persistent estimated consultation time for patient display
-      entry.estimatedConsultationStartTime = estStart;
-      entry.estimatedConsultationEndTime = estEnd;
-
-      // Maintain legacy fields for internal calculations (not shown to patient)
-      entry.queuePosition = position;
-      // Legacy: estimatedReportingTime used by old display logic
-      entry.estimatedReportingTime = estStart;
-      // Legacy: estimatedWaitingMinutes used by old display logic
-      const now = Date.now();
-      entry.estimatedWaitingMinutes = Math.max(Math.round((estStart.getTime() - now) / 60000), 0);
-
-      // Track for appointment sync
-      appointmentsToUpdate.push({
-        appointmentId: entry.appointment,
-        estimatedConsultationStartTime: estStart,
-        estimatedConsultationEndTime: estEnd,
-      });
-    });
-
-    await queue.save({ session });
-
-    // IMPORTANT: Sync estimated times back to Appointment documents.
-    // This ensures patients can query their appointment and get the
-    // latest estimate without relying on Socket.IO or frontend state.
-    if (appointmentsToUpdate.length > 0) {
-      for (const update of appointmentsToUpdate) {
-        const appointmentQuery = Appointment.findByIdAndUpdate(
-          update.appointmentId,
-          {
-            estimatedConsultationStartTime: update.estimatedConsultationStartTime,
-            estimatedConsultationEndTime: update.estimatedConsultationEndTime,
-          },
-          { new: true }
-        );
-        if (session) {
-          await appointmentQuery.session(session);
-        } else {
-          await appointmentQuery;
-        }
+        slotIndex = Math.max(slotIndex, elapsedSlots);
       }
     }
 
-    return queue;
-  }
+    const slotStart = startMinutes + slotIndex * duration;
+    const slotEnd = slotStart + duration;
 
-  // =====================================================================
-  // Per-patient transitions (delegated to by the Doctor Assistant module)
-  // =====================================================================
-
-  static findEntry(queue, appointmentId) {
-    const entry = queue.entries.find((e) => e.appointment.toString() === appointmentId.toString());
-    if (!entry) {
-      throw new ApiError(404, 'Queue entry not found for this appointment.');
+    if (slotEnd > endMinutes) {
+      throw new Error(
+        'No appointment slots remain within the doctor’s working hours'
+      );
     }
-    return entry;
+
+    const formatTime = (minutes) =>
+      `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(
+        minutes % 60
+      ).padStart(2, '0')}`;
+
+    return {
+      start: formatTime(slotStart),
+      end: formatTime(slotEnd),
+    };
   }
 
   /**
-   * Selects and calls the next patient. Only appointments Reception has
-   * explicitly released (isInDoctorQueue: true) are callable — checked
-   * via a single targeted query rather than populating the queue document
-   * itself (which this method mutates and the caller then saves).
+   * Delegate queue estimates to the single scheduling engine.
    */
-  static async callNext(queue) {
-    if (queue.status !== QUEUE_STATUS.ACTIVE) {
-      throw new ApiError(400, `Queue is currently "${queue.status}". Resume it before calling patients.`);
-    }
+  static async recalculateQueue(doctorId, appointmentDate, session) {
+    const QueueScheduler = require('./queue.scheduler.service');
 
-    const waitingEntries = queue.entries
-      .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING)
-      .sort((a, b) => a.tokenNumber - b.tokenNumber);
-
-    if (waitingEntries.length === 0) {
-      throw new ApiError(404, 'No patients are currently waiting in the queue.');
-    }
-
-    const released = await Appointment.find(
-      { _id: { $in: waitingEntries.map((e) => e.appointment) }, isInDoctorQueue: true },
-      '_id'
-    ).lean();
-    const releasedIds = new Set(released.map((a) => a._id.toString()));
-
-    const candidate = waitingEntries.find((e) => releasedIds.has(e.appointment.toString()));
-    if (!candidate) {
-      throw new ApiError(404, 'No released patients are currently waiting in the queue.');
-    }
-
-    candidate.status = QUEUE_ENTRY_STATUS.CALLED;
-    candidate.calledAt = new Date();
-    queue.currentTokenNumber = candidate.tokenNumber;
-    return candidate;
-  }
-
-  static startConsultation(entry) {
-    console.log('📋 [QUEUE] startConsultation - entry status:', entry.status);
-    console.log('📋 [QUEUE] Allowed statuses:', QUEUE_ENTRY_STATUS.CALLED, 'or', QUEUE_ENTRY_STATUS.WAITING);
-
-    // Allow starting from CALLED (if called first) or WAITING (direct start)
-    const allowedStatuses = [QUEUE_ENTRY_STATUS.CALLED, QUEUE_ENTRY_STATUS.WAITING];
-    if (!allowedStatuses.includes(entry.status)) {
-      console.error('❌ [QUEUE] Entry in invalid status for starting consultation');
-      throw new ApiError(
-        400,
-        `Cannot start consultation — patient not ready (current queue status: "${entry.status}").`
-      );
-    }
-    entry.status = QUEUE_ENTRY_STATUS.IN_CONSULTATION;
-    entry.consultationStartedAt = new Date();
-    console.log('✅ [QUEUE] Entry status updated to IN_CONSULTATION');
-    return entry;
-  }
-
-  /** Completes the visit and feeds its actual duration into the
-   * queue's adaptive average (see applyCompletionToAverage). */
-  static completeConsultation(queue, entry) {
-    if (entry.status !== QUEUE_ENTRY_STATUS.IN_CONSULTATION) {
-      throw new ApiError(
-        400,
-        `Cannot complete — consultation has not been started (current queue status: "${entry.status}").`
-      );
-    }
-    entry.status = QUEUE_ENTRY_STATUS.COMPLETED;
-    entry.completedAt = new Date();
-
-    const actualMinutes = Math.max((entry.completedAt - entry.consultationStartedAt) / 60000, 1);
-    QueueService.applyCompletionToAverage(queue, actualMinutes);
-
-    return { entry, actualMinutes };
-  }
-
-  /** Reversible — does not touch the linked Appointment's status, so
-   * Reception/Admin can still decide how to handle the patient afterward. */
-  static skipPatient(entry) {
-    if (![QUEUE_ENTRY_STATUS.WAITING, QUEUE_ENTRY_STATUS.CALLED].includes(entry.status)) {
-      throw new ApiError(400, `Cannot skip a patient with queue status "${entry.status}".`);
-    }
-    entry.status = QUEUE_ENTRY_STATUS.SKIPPED;
-    return entry;
-  }
-
-  /**
-   * Mark a patient as PENDING — receptionist has identified that the patient
-   * has not arrived. Sets status to PENDING and records the timestamp.
-   * This does NOT delete or skip the patient — they remain in the queue,
-   * but their status reflects the receptionist's observation.
-   *
-   * Once marked PENDING, the patient will be subject to the grace period policy:
-   * - If they arrive within the grace period, receptionist marks them ARRIVED
-   * - If grace period expires, the queue recalculation will handle delays
-   */
-  static markPending(entry) {
-    if (![QUEUE_ENTRY_STATUS.WAITING, QUEUE_ENTRY_STATUS.CALLED].includes(entry.status)) {
-      throw new ApiError(
-        400,
-        `Cannot mark a patient as pending with queue status "${entry.status}".`
-      );
-    }
-    entry.status = QUEUE_ENTRY_STATUS.PENDING;
-    entry.pendingMarkedAt = new Date();
-    return entry;
-  }
-
-  pause(queue) {
-    if (queue.status === QUEUE_STATUS.PAUSED) {
-      throw new ApiError(400, 'Queue is already paused.');
-    }
-    if (queue.status === QUEUE_STATUS.CLOSED) {
-      throw new ApiError(400, 'Cannot pause a closed queue.');
-    }
-    queue.status = QUEUE_STATUS.PAUSED;
-    return queue;
-  }
-
-  static resume(queue) {
-    if (queue.status === QUEUE_STATUS.ACTIVE) {
-      throw new ApiError(400, 'Queue is already active.');
-    }
-    if (queue.status === QUEUE_STATUS.CLOSED) {
-      throw new ApiError(400, 'Cannot resume a closed queue.');
-    }
-    queue.status = QUEUE_STATUS.ACTIVE;
-    return queue;
+    return QueueScheduler.recalculateQueue(
+      doctorId,
+      appointmentDate,
+      session
+    );
   }
 }
 
