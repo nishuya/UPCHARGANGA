@@ -34,6 +34,7 @@ const maxTimeString = (times = []) =>
  *   1. session opening (or token-grid start, if provided)
  *   2. the latest end time already assigned on this doctor/date
  *   3. current hospital time when booking for today (never in the past)
+ *   4. optional atomic cursor (lastAssignedSlotEndMinutes) from the Queue doc
  *
  * Duration always comes from the caller (doctor.availability.slotDurationMinutes).
  */
@@ -45,6 +46,7 @@ const allocateNextTimeSlot = ({
   gridStartTime = null,
   isToday = false,
   nowTimeString = null,
+  lastAssignedSlotEndMinutes = null,
 }) => {
   const duration = Number(durationMinutes);
   if (!Number.isFinite(duration) || duration < 1) {
@@ -60,6 +62,13 @@ const allocateNextTimeSlot = ({
   const latestOccupiedEnd = maxTimeString(occupyingEndTimes);
   if (latestOccupiedEnd) {
     start = laterTime(start, latestOccupiedEnd);
+  }
+
+  if (
+    lastAssignedSlotEndMinutes != null &&
+    Number.isFinite(Number(lastAssignedSlotEndMinutes))
+  ) {
+    start = laterTime(start, minutesToTime(Number(lastAssignedSlotEndMinutes)));
   }
 
   if (isToday && nowTimeString) {
@@ -83,9 +92,30 @@ const allocateNextTimeSlot = ({
   };
 };
 
+/**
+ * Pure helper: given a floor (minutes) and an optional previous cursor,
+ * return the next {startMinutes, endMinutes} pair.
+ * Used by the atomic Queue cursor update so concurrent bookers cannot collide.
+ */
+const nextSlotFromCursor = (floorMinutes, previousEndMinutes, durationMinutes) => {
+  const duration = Number(durationMinutes);
+  const floor = Number(floorMinutes);
+  const prev =
+    previousEndMinutes == null || !Number.isFinite(Number(previousEndMinutes))
+      ? null
+      : Number(previousEndMinutes);
+  const startMinutes = prev == null ? floor : Math.max(floor, prev);
+  return {
+    startMinutes,
+    endMinutes: startMinutes + duration,
+  };
+};
+
 module.exports = {
   resolveConsultationDuration,
   allocateNextTimeSlot,
+  nextSlotFromCursor,
   laterTime,
   maxTimeString,
+  sessionEndMinutes,
 };

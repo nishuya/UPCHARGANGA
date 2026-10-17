@@ -1,4 +1,8 @@
-const { allocateNextTimeSlot } = require('../../utils/slotAllocation.util');
+const {
+  allocateNextTimeSlot,
+  nextSlotFromCursor,
+  resolveConsultationDuration,
+} = require('../../utils/slotAllocation.util');
 const QueueService = require('./queue.service');
 const ApiError = require('../../errors/ApiError');
 
@@ -212,5 +216,41 @@ describe('Appointment slot allocation', () => {
     );
 
     expect(second).toEqual({ start: '12:40', end: '12:50' });
+  });
+
+  test('atomic cursor advances produce unique sequential slots for concurrent claimers', () => {
+    const duration = resolveConsultationDuration({ slotDurationMinutes: 12 });
+    expect(duration).toBe(12);
+
+    const floor = 10 * 60 + 20; // 10:20
+    let cursor = null;
+    const claimed = [];
+
+    for (let i = 0; i < 5; i += 1) {
+      const slot = nextSlotFromCursor(floor, cursor, duration);
+      claimed.push(slot);
+      cursor = slot.endMinutes;
+    }
+
+    expect(claimed.map((s) => s.startMinutes)).toEqual([
+      floor,
+      floor + 12,
+      floor + 24,
+      floor + 36,
+      floor + 48,
+    ]);
+    expect(new Set(claimed.map((s) => s.startMinutes)).size).toBe(5);
+  });
+
+  test('missing consultation duration is rejected instead of falling back to a hardcoded value', () => {
+    expect(() => resolveConsultationDuration({})).toThrow(ApiError);
+    expect(() => resolveConsultationDuration({ slotDurationMinutes: 0 })).toThrow(ApiError);
+  });
+
+  test('cursor respects a later floor after same-day now snap', () => {
+    const first = nextSlotFromCursor(12 * 60 + 30, null, 10);
+    const second = nextSlotFromCursor(12 * 60 + 30, first.endMinutes, 10);
+    expect(first).toEqual({ startMinutes: 750, endMinutes: 760 });
+    expect(second).toEqual({ startMinutes: 760, endMinutes: 770 });
   });
 });

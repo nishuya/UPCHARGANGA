@@ -14,7 +14,17 @@ const formatDate = (value) =>
 
 const formatTime = (value) => {
   if (!value) return '—';
-  return value.substring(0, 5);
+  // Booked slots are "HH:mm" strings; live estimates are ISO datetimes.
+  if (typeof value === 'string' && /^\d{2}:\d{2}/.test(value)) {
+    return value.substring(0, 5);
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
 };
 
 const formatDateTime = (value) =>
@@ -40,6 +50,12 @@ const BookingSuccessPage = () => {
   const bookingNumber = bookingResult?.bookingNumber || appointment?.bookingNumber;
   const queueNumber = bookingResult?.queueNumber ?? appointment?.tokenNumber;
   const queueStatus = bookingResult?.queueStatus;
+  const estimatedStart =
+    bookingResult?.estimatedConsultationStartTime ||
+    appointment?.estimatedConsultationStartTime;
+  const estimatedEnd =
+    bookingResult?.estimatedConsultationEndTime ||
+    appointment?.estimatedConsultationEndTime;
 
   if (shouldFetch && isLoading) return <Spinner label="Loading your booking…" />;
   if (shouldFetch && (isError || !appointment)) {
@@ -198,29 +214,20 @@ const BookingSuccessPage = () => {
                 </p>
               </div>
               <div>
-                <p className="text-caption font-medium text-neutral-500">Time Slot</p>
+                <p className="text-caption font-medium text-neutral-500">Booked time slot</p>
                 <p className="mt-1 text-body font-semibold text-neutral-900">
                   {formatTime(appointment?.timeSlot?.start)} –{' '}
                   {formatTime(appointment?.timeSlot?.end)}
                 </p>
               </div>
 
-              {queueStatus?.estimatedReportingTime && (
-                <div>
-                  <p className="text-caption font-medium text-neutral-500">Report By</p>
-                  <p className="mt-1 text-body font-semibold text-neutral-900">
-                    {formatTime(queueStatus.estimatedReportingTime)}
-                  </p>
-                </div>
-              )}
-
-              {queueStatus?.estimatedWaitingMinutes != null && (
+              {estimatedStart && estimatedEnd && (
                 <div>
                   <p className="text-caption font-medium text-neutral-500">
-                    Estimated Waiting Time
+                    Estimated consultation
                   </p>
                   <p className="mt-1 text-body font-semibold text-neutral-900">
-                    ~{queueStatus.estimatedWaitingMinutes} minutes
+                    {formatTime(estimatedStart)} – {formatTime(estimatedEnd)}
                   </p>
                 </div>
               )}

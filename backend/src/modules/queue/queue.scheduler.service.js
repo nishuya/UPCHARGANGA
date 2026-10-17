@@ -1,75 +1,55 @@
 /**
  * QUEUE SCHEDULER SERVICE
  * ========================
- * The SINGLE SOURCE OF TRUTH for all queue scheduling logic.
+ * The SINGLE SOURCE OF TRUTH for all live queue estimate logic.
  *
- * Responsibility: Calculate and persist the correct estimated consultation
- * times for every patient, accounting for:
- *   - Doctor's actual progress (actual start/end times)
- *   - Patient arrival status (on-time, late, not-arrived)
- *   - Attendance timeouts (5-minute window after scheduled start)
- *   - Queue composition (who's waiting, who's consulting, who's done)
+ * Booked appointment timeSlot values are assigned at booking time by
+ * QueueService.allocateScheduledSlot and are NOT overwritten here.
+ *
+ * This service recalculates estimatedConsultationStart/EndTime based on:
+ *   - Doctor's configured slotDurationMinutes (never hardcoded)
+ *   - Authoritative token / queue order
+ *   - Actual consultation progress (start / completion)
+ *   - PENDING patients past the grace period (do not block later patients)
+ *   - Attendance timeouts (flagged once; overdue WAITING patients still hold position)
  *
  * GUARANTEES:
- *   1. Every waiting patient receives a UNIQUE, NON-OVERLAPPING estimated slot
- *   2. Slots are calculated sequentially in booking (token) order
+ *   1. Every actively scheduled patient receives a UNIQUE, NON-OVERLAPPING estimate
+ *   2. Slots advance by the doctor's configured duration
  *   3. Attendance timeouts are applied EXACTLY ONCE (idempotent)
- *   4. Doctor's actual progress (or delay) cascades to ALL future patients
- *   5. Early completions move future estimates earlier (don't keep stale delays)
- *
- * This service is called after every event that changes queue state:
- *   - New booking
- *   - Appointment cancellation
- *   - Patient marked arrived
- *   - Attendance timeout trigger
- *   - Consultation start/completion
- *
- * Output: Persisted queue with correct sequential slots for all patients
+ *   4. Doctor delay / early completion cascades from actual timestamps
+ *   5. Recalculating an unchanged queue with the same clock base is stable
  */
 
 const Queue = require('./queue.model');
 const Appointment = require('../appointments/appointments.model');
 const Doctor = require('../doctors/doctors.model');
 const ApiError = require('../../errors/ApiError');
+const { resolveConsultationDuration } = require('../../utils/slotAllocation.util');
 const {
   getHospitalNow,
   normalizeDateOnly,
   combineDateAndTime,
   addMinutesToTime,
-  timeToMinutes,
-  minutesToTime,
+  getWeekdayName,
 } = require('../../utils/datetime.util');
-const { QUEUE_ENTRY_STATUS, APPOINTMENT_STATUS } = require('../../constants/enums');
+const { QUEUE_ENTRY_STATUS, BOOKING_CONSTRAINTS } = require('../../constants/enums');
 
 class QueueScheduler {
   /**
-   * MAIN ENTRY POINT
-   * Recalculates and persists the entire queue for a doctor/date.
-   *
-   * Algorithm:
-   * 1. Load queue and doctor's consultation duration
-   * 2. Apply any pending attendance timeouts (idempotent — only once per appointment)
-   * 3. Identify current state: who's consulting, who's waiting, who's done
-   * 4. Determine when the next available slot starts based on actual doctor progress
-   * 5. Calculate sequential, non-overlapping slots for all waiting patients
-   * 6. Persist all changes
-   * 7. Return updated queue for broadcasting
-   *
-   * GUARANTEES:
-   * - Every waiting patient has a unique estimated start and end time
-   * - Slots never overlap
-   * - Attendance timeouts applied exactly once (idempotent flag prevents duplicates)
-   * - Doctor's actual progress (delay or early) cascades to all future patients
-   * - Early completions automatically move future patients earlier
+   * MAIN ENTRY POINT — recalculates and persists the entire queue for a doctor/date.
    */
   static async recalculateQueue(doctorId, appointmentDate, session) {
     console.log('[SCHEDULER] 🔄 Recalculating queue for doctor:', doctorId, 'date:', appointmentDate);
 
     try {
-      // Load queue and doctor profile
+      const normalizedDate = normalizeDateOnly(appointmentDate);
+
+      const queueQuery = Queue.findOne({ doctor: doctorId, date: normalizedDate });
+      const doctorQuery = Doctor.findById(doctorId, 'availability');
       const [queue, doctor] = await Promise.all([
-        Queue.findOne({ doctor: doctorId, date: appointmentDate }).session(session),
-        Doctor.findById(doctorId, 'availability').session(session),
+        session ? queueQuery.session(session) : queueQuery,
+        session ? doctorQuery.session(session) : doctorQuery,
       ]);
 
       if (!queue) {
@@ -78,63 +58,78 @@ class QueueScheduler {
       }
 
       if (!doctor) {
-        throw new Error('Doctor not found');
+        throw new ApiError(404, 'Doctor not found');
       }
 
-      // Get doctor's consultation duration for this date
-      const daySchedule = this._getDaySchedule(doctor, appointmentDate);
+      const daySchedule = this._getDaySchedule(doctor, normalizedDate);
       if (!daySchedule) {
-        throw new Error('Doctor not available on this date');
+        throw new ApiError(400, 'Doctor not available on this date');
       }
 
-      const consultationMinutes = daySchedule.slotDurationMinutes || 15;
+      const consultationMinutes = resolveConsultationDuration(daySchedule);
       console.log('[SCHEDULER] ⏱️  Consultation duration:', consultationMinutes, 'minutes');
 
-      // Step 1: Apply any pending attendance timeouts (idempotent)
       this._applyPendingAttendanceTimeouts(queue);
 
-      // Step 2: Identify current queue state
       const queueState = this._analyzeQueueState(queue);
       console.log('[SCHEDULER] 📊 Queue state:', {
-        waitingCount: queueState.waiting.length,
+        activeCount: queueState.active.length,
+        deferredPendingCount: queueState.deferredPending.length,
         consultingToken: queueState.consulting?.tokenNumber,
         completedCount: queueState.completed.length,
       });
 
-      // Step 3: Determine next available slot start time based on actual doctor progress
       const nextSlotStart = this._getNextAvailableSlotStart(
         queueState,
         consultationMinutes,
-        appointmentDate,
+        normalizedDate,
         daySchedule
       );
       console.log('[SCHEDULER] ⏰ Next available slot starts at:', nextSlotStart);
 
-      // Step 4: Calculate sequential slots for all waiting patients
       this._calculateSequentialSlots(
-        queueState.waiting,
+        queueState.active,
         nextSlotStart,
         consultationMinutes,
-        appointmentDate
+        normalizedDate
       );
 
-      // Step 5: Persist changes
-      await queue.save({ session });
+      // PENDING patients past grace no longer block the active chain. Give them
+      // a deferred estimate after the active queue so they still see a time.
+      if (queueState.deferredPending.length > 0) {
+        const lastActive = queueState.active[queueState.active.length - 1];
+        const deferredStart = lastActive?.estimatedConsultationEndTime
+          ? new Date(lastActive.estimatedConsultationEndTime.getTime())
+          : new Date(nextSlotStart.getTime());
+
+        this._calculateSequentialSlots(
+          queueState.deferredPending,
+          deferredStart,
+          consultationMinutes,
+          normalizedDate,
+          queueState.active.length
+        );
+      }
+
+      if (session) {
+        await queue.save({ session });
+      } else {
+        await queue.save();
+      }
       console.log('[SCHEDULER] ✅ Queue persisted successfully');
 
-      // IMPORTANT: Sync estimated times back to Appointment documents.
-      // This ensures patients can query their appointment and get the
-      // latest estimate without relying on Socket.IO or frontend state.
-      for (const entry of queueState.waiting) {
+      const toSync = [...queueState.active, ...queueState.deferredPending];
+      for (const entry of toSync) {
         if (entry.estimatedConsultationStartTime && entry.estimatedConsultationEndTime) {
-          await Appointment.findByIdAndUpdate(
-            entry.appointment,
-            {
-              estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
-              estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
-            },
-            { session }
-          );
+          const updateQuery = Appointment.findByIdAndUpdate(entry.appointment, {
+            estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
+            estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
+          });
+          if (session) {
+            await updateQuery.session(session);
+          } else {
+            await updateQuery;
+          }
         }
       }
       console.log('[SCHEDULER] ✅ Appointment estimated times synced');
@@ -147,345 +142,308 @@ class QueueScheduler {
   }
 
   /**
-   * Apply 5-minute attendance timeouts (idempotent)
-   * ONLY apply once per appointment, tracked by attendanceTimeoutApplied flag.
-   * This prevents the same delay from being applied multiple times if the
-   * scheduler runs repeatedly on the same patient.
-   *
-   * Flow:
-   * 1. Check if attendance window has closed
-   * 2. Check if timeout hasn't already been applied (idempotency)
-   * 3. Check if patient hasn't been marked arrived
-   * 4. Mark timeout as applied and flag for recalculation
+   * Apply 5-minute attendance timeouts exactly once per entry.
+   * Does NOT auto-skip the patient — they remain WAITING and continue to
+   * hold their place until reception marks pending / arrived / cancelled.
    */
   static _applyPendingAttendanceTimeouts(queue) {
     const now = getHospitalNow();
     let hasAppliedNewTimeout = false;
 
     for (const entry of queue.entries) {
-      // Skip if not waiting or already marked arrived
       if (entry.status !== QUEUE_ENTRY_STATUS.WAITING) continue;
       if (entry.arrivalStatus !== 'not-arrived') continue;
       if (!entry.attendanceWindowClosesAt) continue;
-
-      // Skip if timeout was already applied (idempotent)
       if (entry.attendanceTimeoutApplied) continue;
 
-      // Check if attendance window has closed
       if (now >= entry.attendanceWindowClosesAt) {
         console.log(
-          '[SCHEDULER] ⏰ Attendance timeout triggered for token',
+          '[SCHEDULER] ⏰ Attendance timeout flagged for token',
           entry.tokenNumber,
-          '— patient did not arrive within 5 minutes'
+          '— patient still waiting (not auto-skipped)'
         );
 
-        // Mark as applied (prevents duplicate application)
         entry.attendanceTimeoutApplied = true;
         entry.attendanceTimeoutAppliedAt = now;
         entry.delayReason = 'patient-not-arrived-5min-timeout';
-
         hasAppliedNewTimeout = true;
       }
     }
 
     if (hasAppliedNewTimeout) {
-      console.log('[SCHEDULER] 📌 One or more timeouts applied; full recalculation will handle delays');
+      console.log('[SCHEDULER] 📌 Attendance timeout(s) flagged; sequential calc uses current progress');
     }
   }
 
   /**
-   * Categorize queue entries into: waiting, consulting, completed, cancelled
-   * PENDING patients are included in the "waiting" list for delay calculation
+   * Categorize entries.
+   * - active: WAITING + CALLED + PENDING-within-grace (still block later patients)
+   * - deferredPending: PENDING past grace (do not block; scheduled after active)
+   * - consulting / completed: drive the schedule base
    */
   static _analyzeQueueState(queue) {
-    const waiting = [];
+    const active = [];
+    const deferredPending = [];
     let currentConsulting = null;
     const completed = [];
+    const now = getHospitalNow();
+    const graceMinutes = BOOKING_CONSTRAINTS.PENDING_GRACE_PERIOD_MINUTES;
 
     for (const entry of queue.entries) {
-      if ([QUEUE_ENTRY_STATUS.WAITING, QUEUE_ENTRY_STATUS.PENDING, QUEUE_ENTRY_STATUS.CALLED].includes(entry.status)) {
-        waiting.push(entry);
-      } else if (entry.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION) {
+      if (entry.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION) {
         currentConsulting = entry;
-      } else if (
+        continue;
+      }
+
+      if (
         [QUEUE_ENTRY_STATUS.COMPLETED, QUEUE_ENTRY_STATUS.SKIPPED, QUEUE_ENTRY_STATUS.NO_SHOW].includes(
           entry.status
         )
       ) {
         completed.push(entry);
+        continue;
+      }
+
+      if (entry.status === QUEUE_ENTRY_STATUS.PENDING) {
+        const pendingAt = entry.pendingMarkedAt ? new Date(entry.pendingMarkedAt) : null;
+        const pendingMinutes = pendingAt ? (now.getTime() - pendingAt.getTime()) / 60000 : 0;
+        if (pendingAt && pendingMinutes > graceMinutes) {
+          deferredPending.push(entry);
+        } else {
+          active.push(entry);
+        }
+        continue;
+      }
+
+      if ([QUEUE_ENTRY_STATUS.WAITING, QUEUE_ENTRY_STATUS.CALLED].includes(entry.status)) {
+        active.push(entry);
       }
     }
 
-    // Sort waiting by token number (preserves booking order)
-    waiting.sort((a, b) => a.tokenNumber - b.tokenNumber);
-    // Sort completed by actual end time to find the most recent
+    active.sort((a, b) => a.tokenNumber - b.tokenNumber);
+    deferredPending.sort((a, b) => a.tokenNumber - b.tokenNumber);
     completed.sort((a, b) => {
-      if (!a.actualEndDateTime) return 1;
-      if (!b.actualEndDateTime) return -1;
-      return a.actualEndDateTime.getTime() - b.actualEndDateTime.getTime();
+      const aEnd = a.actualEndDateTime || a.completedAt;
+      const bEnd = b.actualEndDateTime || b.completedAt;
+      if (!aEnd) return 1;
+      if (!bEnd) return -1;
+      return aEnd.getTime() - bEnd.getTime();
     });
 
     return {
-      waiting,
+      active,
+      deferredPending,
+      waiting: active,
       consulting: currentConsulting,
       completed,
     };
   }
 
   /**
-   * Determine when the next available consultation slot should start.
+   * Determine when the next active consultation slot should start.
    *
-   * Priority (in order):
-   * 1. If someone is currently consulting: next slot = when they finish
-   * 2. If some completed: next slot = when the last one finished
-   * 3. Account for PENDING patients: if a patient has been pending > grace period,
-   *    add delay equal to consultation duration for each unresolved pending
-   * 4. If today and doctor schedule has started: use current time (+ accumulated pending delays)
-   * 5. Default: use doctor's scheduled start time (+ accumulated pending delays)
+   * Priority:
+   * 1. Current consultation: max(actualStart + duration, now) — live overrun
+   * 2. Last completion: actualEnd (early finish advances the queue)
+   * 3. Otherwise: doctor session start, clamped to now only when booking day is today
+   *    AND the session has already opened (realistic same-day base)
+   *
+   * Pending delays are NOT added on top of including patients in the sequence —
+   * past-grace PENDING patients are deferred out of the active chain instead.
    */
+  /**
+   * Map an actual progress timestamp onto the appointment calendar day.
+   * Progress timestamps use hospital wall-clock stored in UTC fields; the
+   * appointment date may be a future clinic day in tests/simulations.
+   */
+  static _progressOnAppointmentDay(progressDate, appointmentDate, isToday, now) {
+    const timeStr = this._datetimeToTimeString(progressDate);
+    let onDay = combineDateAndTime(appointmentDate, timeStr);
+    if (isToday && onDay < now) {
+      onDay = new Date(now.getTime());
+    }
+    return onDay;
+  }
+
   static _getNextAvailableSlotStart(queueState, consultationMinutes, appointmentDate, daySchedule) {
     const now = getHospitalNow();
-    const todayNormalized = normalizeDateOnly(appointmentDate);
-    const nowNormalized = normalizeDateOnly(now);
-    const isToday = todayNormalized.getTime() === nowNormalized.getTime();
-    const { PENDING_GRACE_PERIOD_MINUTES } = require('../../constants/enums').BOOKING_CONSTRAINTS;
+    const todayNormalized = normalizeDateOnly(now);
+    const apptNormalized = normalizeDateOnly(appointmentDate);
+    const isToday = apptNormalized.getTime() === todayNormalized.getTime();
 
-    // Calculate accumulated delay from PENDING patients who have exceeded grace period
-    let accumulatedPendingDelay = 0;
-    const pendingPatients = queueState.waiting.filter((e) => e.status === QUEUE_ENTRY_STATUS.PENDING);
+    if (queueState.consulting) {
+      const startedAt =
+        queueState.consulting.actualStartDateTime ||
+        queueState.consulting.consultationStartedAt;
 
-    for (const pendingEntry of pendingPatients) {
-      if (pendingEntry.pendingMarkedAt) {
-        const timePendingMs = now.getTime() - pendingEntry.pendingMarkedAt.getTime();
-        const timePendingMinutes = timePendingMs / 60000;
-
-        // If pending exceeds grace period, apply delay
-        if (timePendingMinutes > PENDING_GRACE_PERIOD_MINUTES) {
-          accumulatedPendingDelay += consultationMinutes;
-          console.log(
-            `[SCHEDULER] ⏳ Patient #${pendingEntry.tokenNumber} pending for ${Math.round(timePendingMinutes)}min ` +
-            `(grace: ${PENDING_GRACE_PERIOD_MINUTES}min) — adding ${consultationMinutes}min delay`
-          );
-        }
+      if (startedAt) {
+        const startedOnDay = this._progressOnAppointmentDay(
+          startedAt,
+          appointmentDate,
+          isToday,
+          now
+        );
+        const estimatedEnd = new Date(startedOnDay.getTime() + consultationMinutes * 60000);
+        const nextStart =
+          isToday && estimatedEnd < now ? new Date(now.getTime()) : estimatedEnd;
+        console.log('[SCHEDULER] 📞 Doctor currently consulting, next slot after:', nextStart);
+        return nextStart;
       }
     }
 
-    if (accumulatedPendingDelay > 0) {
-      console.log('[SCHEDULER] 📌 Total pending delays:', accumulatedPendingDelay, 'minutes');
-    }
-
-    // If someone is currently consulting, next slot starts after they finish
-    if (queueState.consulting && queueState.consulting.actualStartDateTime) {
-      const estimatedEndTime = addMinutesToTime(
-        this._datetimeToTimeString(queueState.consulting.actualStartDateTime),
-        consultationMinutes
-      );
-      let estimatedEndDateTime = combineDateAndTime(appointmentDate, estimatedEndTime);
-
-      // Add pending delays
-      if (accumulatedPendingDelay > 0) {
-        estimatedEndDateTime = new Date(estimatedEndDateTime.getTime() + accumulatedPendingDelay * 60000);
-      }
-
-      console.log('[SCHEDULER] 📞 Doctor currently consulting, next slot after:', estimatedEndDateTime);
-      return estimatedEndDateTime;
-    }
-
-    // If no one consulting but some completed, use last completion time
     if (queueState.completed.length > 0) {
       const lastCompleted = queueState.completed[queueState.completed.length - 1];
-      if (lastCompleted.actualEndDateTime) {
-        let nextStart = new Date(lastCompleted.actualEndDateTime.getTime());
-
-        // Add pending delays
-        if (accumulatedPendingDelay > 0) {
-          nextStart = new Date(nextStart.getTime() + accumulatedPendingDelay * 60000);
-        }
-
-        console.log('[SCHEDULER] ✅ Last consultation ended at:', lastCompleted.actualEndDateTime, 'adjusted for pending:', nextStart);
+      const endedAt = lastCompleted.actualEndDateTime || lastCompleted.completedAt;
+      if (endedAt) {
+        const nextStart = this._progressOnAppointmentDay(
+          endedAt,
+          appointmentDate,
+          isToday,
+          now
+        );
+        console.log('[SCHEDULER] ✅ Last consultation ended at:', nextStart);
         return nextStart;
       }
     }
 
-    // If today and doctor schedule has started, use current time + pending delays
-    if (isToday) {
-      const scheduleStart = combineDateAndTime(appointmentDate, daySchedule.startTime);
-      if (now > scheduleStart) {
-        let nextStart = new Date(now.getTime());
+    const scheduleStart = combineDateAndTime(appointmentDate, daySchedule.startTime);
 
-        // Add pending delays
-        if (accumulatedPendingDelay > 0) {
-          nextStart = new Date(nextStart.getTime() + accumulatedPendingDelay * 60000);
-        }
-
-        console.log('[SCHEDULER] 🕐 Doctor schedule started, using current time:', now, 'adjusted for pending:', nextStart);
-        return nextStart;
-      }
+    if (isToday && now > scheduleStart) {
+      console.log('[SCHEDULER] 🕐 Session open today — base is current hospital time:', now);
+      return new Date(now.getTime());
     }
 
-    // Default: use doctor's scheduled start time + pending delays
-    let defaultStart = combineDateAndTime(appointmentDate, daySchedule.startTime);
-    if (accumulatedPendingDelay > 0) {
-      defaultStart = new Date(defaultStart.getTime() + accumulatedPendingDelay * 60000);
-    }
-
-    console.log('[SCHEDULER] 📅 Using doctor scheduled start:', defaultStart);
-    return defaultStart;
+    console.log('[SCHEDULER] 📅 Using doctor scheduled start:', scheduleStart);
+    return scheduleStart;
   }
 
   /**
-   * Calculate sequential consultation slots for all waiting patients.
-   *
-   * CRITICAL: Each patient receives a UNIQUE, NON-OVERLAPPING slot.
-   * Starting from nextSlotStart, slots are spaced sequentially by consultationMinutes.
-   *
-   * Each slot is calculated as:
-   * - Slot N start = Slot (N-1) end
-   * - Slot N end = Slot N start + consultationMinutes
-   *
-   * This guarantees no overlaps and no duplicate times.
-   *
-   * IMPORTANT: Also stores estimated consultation start/end times for patient display.
+   * Assign sequential, non-overlapping estimates to the given entries.
+   * positionOffset shifts queuePosition when assigning deferred pending patients.
    */
-  static _calculateSequentialSlots(waitingEntries, nextSlotStart, consultationMinutes, appointmentDate) {
+  static _calculateSequentialSlots(
+    entries,
+    nextSlotStart,
+    consultationMinutes,
+    appointmentDate,
+    positionOffset = 0
+  ) {
     const now = getHospitalNow();
 
-    console.log('[SCHEDULER] 📋 Calculating slots for', waitingEntries.length, 'waiting patients');
-    console.log('[SCHEDULER]    Starting from:', nextSlotStart);
+    console.log('[SCHEDULER] 📋 Calculating slots for', entries.length, 'patients from', nextSlotStart);
 
     let currentSlotStart = new Date(nextSlotStart.getTime());
 
-    for (let i = 0; i < waitingEntries.length; i++) {
-      const entry = waitingEntries[i];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
 
-      // Calculate this patient's slot
       const slotStartTimeStr = this._datetimeToTimeString(currentSlotStart);
       const slotEndTimeStr = addMinutesToTime(slotStartTimeStr, consultationMinutes);
-
-      // Convert back to full datetime
-      const slotStartDateTime = new Date(currentSlotStart.getTime());
+      const slotStartDateTime = combineDateAndTime(appointmentDate, slotStartTimeStr);
       const slotEndDateTime = combineDateAndTime(appointmentDate, slotEndTimeStr);
 
-      // Update entry with both scheduled (original booking) and estimated (recalculated) times
-      entry.queuePosition = i + 1;
+      entry.queuePosition = positionOffset + i + 1;
       entry.estimatedStartTime = slotStartTimeStr;
       entry.estimatedEndTime = slotEndTimeStr;
       entry.estimatedReportingTime = slotStartDateTime;
-
-      // IMPORTANT: Store persistent estimated consultation times for patient display
-      // These are synced to the Appointment document after queue save
       entry.estimatedConsultationStartTime = slotStartDateTime;
       entry.estimatedConsultationEndTime = slotEndDateTime;
-
-      const waitingMinutes = Math.max(
+      entry.estimatedWaitingMinutes = Math.max(
         Math.round((slotStartDateTime.getTime() - now.getTime()) / 60000),
         0
       );
-      entry.estimatedWaitingMinutes = waitingMinutes;
 
       console.log(
-        `[SCHEDULER]    Patient ${i + 1} (token ${entry.tokenNumber}): ` +
-        `${slotStartTimeStr}–${slotEndTimeStr} ` +
-        `(wait: ${waitingMinutes}min)`
+        `[SCHEDULER]    Patient pos ${entry.queuePosition} (token ${entry.tokenNumber}): ` +
+          `${slotStartTimeStr}–${slotEndTimeStr}`
       );
 
-      // Next patient's slot starts where this one ends
       currentSlotStart = new Date(slotEndDateTime.getTime());
     }
 
-    console.log('[SCHEDULER] ✅ All sequential slots calculated');
+    console.log('[SCHEDULER] ✅ Sequential slots calculated');
   }
 
   /**
-   * Helper: Convert datetime to "HH:mm" format
+   * Convert datetime to "HH:mm" using UTC getters.
+   * Hospital "now" and combineDateAndTime both store IST wall-clock in the
+   * UTC fields of the Date object — local getHours() would shift by the
+   * server's real timezone and corrupt estimates.
    */
   static _datetimeToTimeString(datetime) {
     if (typeof datetime === 'string') return datetime;
-    const hours = String(datetime.getHours()).padStart(2, '0');
-    const minutes = String(datetime.getMinutes()).padStart(2, '0');
+    const hours = String(datetime.getUTCHours()).padStart(2, '0');
+    const minutes = String(datetime.getUTCMinutes()).padStart(2, '0');
     return `${hours}:${minutes}`;
   }
 
-  /**
-   * Get doctor's schedule for a specific date
-   */
   static _getDaySchedule(doctor, appointmentDate) {
-    const dayNames = [
-      'sunday',
-      'monday',
-      'tuesday',
-      'wednesday',
-      'thursday',
-      'friday',
-      'saturday',
-    ];
-    const dayOfWeek = dayNames[appointmentDate.getUTCDay()];
-
+    const dayOfWeek = getWeekdayName(appointmentDate);
     return doctor.availability?.find((slot) => slot.day === dayOfWeek) || null;
   }
 
-  /**
-   * Mark a patient as arrived and persist the status.
-   * Sets arrivalStatus to either 'arrived-on-time' or 'arrived-late'.
-   * Marks timeout as applied so the attendance window is no longer checked.
-   */
   static async markPatientArrived(queueId, entryId, isLate = false, session) {
     console.log('[SCHEDULER] 👤 Marking patient arrived:', entryId, 'late:', isLate);
 
-    const queue = await Queue.findById(queueId).session(session);
-    if (!queue) throw new Error('Queue not found');
+    const queueQuery = Queue.findById(queueId);
+    const queue = session ? await queueQuery.session(session) : await queueQuery;
+    if (!queue) throw new ApiError(404, 'Queue not found');
 
     const entry = queue.entries.id(entryId);
-    if (!entry) throw new Error('Queue entry not found');
+    if (!entry) throw new ApiError(404, 'Queue entry not found');
 
-    // Update arrival status
     entry.arrivalStatus = isLate ? 'arrived-late' : 'arrived-on-time';
-    entry.attendanceTimeoutApplied = true; // Don't apply timeout anymore
+    entry.attendanceTimeoutApplied = true;
+    if (entry.status === QUEUE_ENTRY_STATUS.PENDING) {
+      entry.status = QUEUE_ENTRY_STATUS.WAITING;
+      entry.pendingMarkedAt = null;
+    }
 
-    // If patient arrives late, recalculation will handle if they need to be
-    // shuffled in the queue or wait for the next slot
-    await queue.save({ session });
+    if (session) {
+      await queue.save({ session });
+    } else {
+      await queue.save();
+    }
 
     console.log('[SCHEDULER] ✅ Patient marked as', entry.arrivalStatus);
     return entry;
   }
 
-  /**
-   * Record consultation start: capture actual start time and update status.
-   * The next recalculation will cascade this delay (if any) to future patients.
-   */
   static async recordConsultationStart(queueId, entryId, session) {
     console.log('[SCHEDULER] 🚀 Recording consultation start:', entryId);
 
-    const queue = await Queue.findById(queueId).session(session);
-    if (!queue) throw new Error('Queue not found');
+    const queueQuery = Queue.findById(queueId);
+    const queue = session ? await queueQuery.session(session) : await queueQuery;
+    if (!queue) throw new ApiError(404, 'Queue not found');
 
     const entry = queue.entries.id(entryId);
-    if (!entry) throw new Error('Queue entry not found');
+    if (!entry) throw new ApiError(404, 'Queue entry not found');
 
     const now = getHospitalNow();
     entry.actualStartDateTime = now;
+    entry.consultationStartedAt = now;
     entry.actualStartTime = this._datetimeToTimeString(now);
     entry.status = QUEUE_ENTRY_STATUS.IN_CONSULTATION;
 
-    await queue.save({ session });
+    if (session) {
+      await queue.save({ session });
+    } else {
+      await queue.save();
+    }
 
     console.log('[SCHEDULER] ✅ Consultation started at:', entry.actualStartTime);
     return entry;
   }
 
-  /**
-   * Record consultation completion: capture actual end time, calculate duration,
-   * update queue average, and trigger recalculation for remaining patients.
-   */
   static async recordConsultationCompletion(queueId, entryId, doctorId, appointmentDate, session) {
     console.log('[SCHEDULER] ✋ Recording consultation completion:', entryId);
 
-    const queue = await Queue.findById(queueId).session(session);
-    if (!queue) throw new Error('Queue not found');
+    const queueQuery = Queue.findById(queueId);
+    const queue = session ? await queueQuery.session(session) : await queueQuery;
+    if (!queue) throw new ApiError(404, 'Queue not found');
 
     const entry = queue.entries.id(entryId);
-    if (!entry) throw new Error('Queue entry not found');
+    if (!entry) throw new ApiError(404, 'Queue entry not found');
 
     const now = getHospitalNow();
     entry.actualEndDateTime = now;
@@ -493,22 +451,26 @@ class QueueScheduler {
     entry.status = QUEUE_ENTRY_STATUS.COMPLETED;
     entry.completedAt = now;
 
-    // Calculate actual duration
-    if (entry.actualStartDateTime) {
-      const durationMs = now.getTime() - entry.actualStartDateTime.getTime();
+    const startedAt = entry.actualStartDateTime || entry.consultationStartedAt;
+    if (startedAt) {
+      const durationMs = now.getTime() - new Date(startedAt).getTime();
       entry.actualDurationMinutes = Math.round(durationMs / 60000);
 
-      // Update queue's average (exponential moving average)
-      // 70% of old average + 30% of new consultation
-      const avg = queue.averageConsultationMinutes || 15;
+      const avg = queue.averageConsultationMinutes || entry.actualDurationMinutes;
       queue.averageConsultationMinutes = Math.round(avg * 0.7 + entry.actualDurationMinutes * 0.3);
-      console.log('[SCHEDULER] 📊 Updated average consultation time:', queue.averageConsultationMinutes, 'minutes');
+      console.log(
+        '[SCHEDULER] 📊 Updated average consultation time:',
+        queue.averageConsultationMinutes,
+        'minutes'
+      );
     }
 
-    await queue.save({ session });
+    if (session) {
+      await queue.save({ session });
+    } else {
+      await queue.save();
+    }
 
-    // Recalculate remaining queue after completion
-    // This cascades the completion (potentially early) to all future patients
     const recalculated = await this.recalculateQueue(doctorId, appointmentDate, session);
     console.log('[SCHEDULER] ✅ Queue recalculated after completion');
 

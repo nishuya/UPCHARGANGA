@@ -7,6 +7,8 @@ const { generateBookingNumber } = require('../../utils/booking.util');
 const {
   allocateNextTimeSlot,
   resolveConsultationDuration,
+  nextSlotFromCursor,
+  sessionEndMinutes,
 } = require('../../utils/slotAllocation.util');
 const {
   normalizeDateOnly,
@@ -15,6 +17,8 @@ const {
   getCurrentTimeString,
   getHospitalNow,
   isSameUTCDate,
+  timeToMinutes,
+  minutesToTime,
 } = require('../../utils/datetime.util');
 const { APPOINTMENT_STATUS, QUEUE_ENTRY_STATUS, QUEUE_STATUS } = require('../../constants/enums');
 
@@ -114,7 +118,8 @@ class QueueService {
    *
    * Same-day bookings previously all snapped independently to "now", which
    * assigned the same clock time to multiple patients. Occupying end times
-   * must be supplied so each new booking starts when the previous one ends.
+   * (and the atomic Queue cursor) must be supplied so each new booking
+   * starts when the previous one ends.
    */
   static computeScheduledSlot(daySchedule, tokenNumber, appointmentDate, options = {}) {
     const duration = resolveConsultationDuration(daySchedule);
@@ -129,6 +134,7 @@ class QueueService {
     console.log('   Grid start:', gridStart);
     console.log('   End time limit:', daySchedule.endTime);
     console.log('   Occupying ends:', options.occupyingEndTimes || []);
+    console.log('   Cursor end minutes:', options.lastAssignedSlotEndMinutes);
     console.log('   Same-day booking - current time:', nowTimeString);
 
     const slot = allocateNextTimeSlot({
@@ -139,30 +145,129 @@ class QueueService {
       gridStartTime: gridStart,
       isToday,
       nowTimeString,
+      lastAssignedSlotEndMinutes: options.lastAssignedSlotEndMinutes,
     });
 
     console.log('   Final slot - start:', slot.start, 'end:', slot.end);
-    return slot;
+    return { start: slot.start, end: slot.end };
   }
 
   /**
-   * Reads already-booked slots for this doctor/date (inside the caller's
-   * transaction) and allocates the next unique consultation window.
+   * Atomically claims the next unique consultation window for this doctor/date.
+   *
+   * Uses Queue.lastAssignedSlotEndMinutes as a monotonic cursor so two
+   * concurrent transactions cannot both allocate the same start time even
+   * when appointment reads still show an identical occupying set.
    */
   static async allocateScheduledSlot(daySchedule, tokenNumber, appointmentDate, { doctorId, session, nowTimeString } = {}) {
+    const duration = resolveConsultationDuration(daySchedule);
+    const normalizedDate = normalizeDateOnly(appointmentDate);
+    const now = getHospitalNow();
+    const isToday = isSameUTCDate(normalizedDate, now);
+    const effectiveNow = nowTimeString ?? (isToday ? getCurrentTimeString() : null);
+
+    let floorMinutes = timeToMinutes(daySchedule.startTime);
+    if (isToday && effectiveNow) {
+      floorMinutes = Math.max(floorMinutes, timeToMinutes(effectiveNow));
+    }
+
+    const limit = sessionEndMinutes(daySchedule.endTime);
+
+    // Belt-and-suspenders: also consider already-persisted appointment ends
+    // (visible inside this transaction) so the cursor cannot lag behind reality.
     const occupyingQuery = Appointment.find({
       doctor: doctorId,
-      appointmentDate: normalizeDateOnly(appointmentDate),
+      appointmentDate: normalizedDate,
       isActive: true,
       status: { $nin: SLOT_FREE_STATUSES },
     }).select('timeSlot');
 
     const occupying = session ? await occupyingQuery.session(session).lean() : await occupyingQuery.lean();
+    const occupyingEndMinutes = occupying
+      .map((appointment) => appointment.timeSlot?.end)
+      .filter(Boolean)
+      .map((end) => timeToMinutes(end));
+    const occupyingFloor =
+      occupyingEndMinutes.length > 0 ? Math.max(...occupyingEndMinutes) : null;
 
-    return QueueService.computeScheduledSlot(daySchedule, tokenNumber, appointmentDate, {
-      occupyingEndTimes: occupying.map((appointment) => appointment.timeSlot?.end).filter(Boolean),
-      nowTimeString,
-    });
+    if (occupyingFloor != null) {
+      floorMinutes = Math.max(floorMinutes, occupyingFloor);
+    }
+
+    // Do NOT raise the floor by token-grid offset here. Concurrent bookers
+    // can receive tokens out of claim order; the atomic cursor alone keeps
+    // start times unique and sequential. Token numbers remain authoritative
+    // for queue ordering via getNextTokenNumber.
+
+    const claimSlot = async (currentFloor) => {
+      const queueQuery = Queue.findOne({ doctor: doctorId, date: normalizedDate }).select(
+        'lastAssignedSlotEndMinutes'
+      );
+      const existing = session ? await queueQuery.session(session) : await queueQuery;
+      const previousEnd = existing?.lastAssignedSlotEndMinutes ?? null;
+      const { startMinutes, endMinutes } = nextSlotFromCursor(currentFloor, previousEnd, duration);
+
+      if (startMinutes >= limit || endMinutes > limit) {
+        throw new ApiError(
+          409,
+          'No valid appointment slots are available for this doctor in the selected session.'
+        );
+      }
+
+      // Atomic compare-and-set: only advance the cursor if it still matches
+      // what we read (or is still unset). Concurrent bookers retry.
+      const filter = {
+        doctor: doctorId,
+        date: normalizedDate,
+        $or: [
+          { lastAssignedSlotEndMinutes: previousEnd },
+          ...(previousEnd == null
+            ? [{ lastAssignedSlotEndMinutes: null }, { lastAssignedSlotEndMinutes: { $exists: false } }]
+            : []),
+        ],
+      };
+
+      const updated = await Queue.findOneAndUpdate(
+        filter,
+        { $set: { lastAssignedSlotEndMinutes: endMinutes } },
+        { new: true, session }
+      );
+
+      if (!updated) {
+        return null; // lost the race — caller retries
+      }
+
+      return {
+        start: minutesToTime(startMinutes),
+        end: minutesToTime(endMinutes),
+      };
+    };
+
+    let slot = null;
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      slot = await claimSlot(floorMinutes);
+      if (slot) break;
+
+      // Another writer advanced the cursor — re-read and try again from the
+      // latest cursor (nextSlotFromCursor will pick max(floor, cursor)).
+      const refreshedQuery = Queue.findOne({ doctor: doctorId, date: normalizedDate }).select(
+        'lastAssignedSlotEndMinutes'
+      );
+      const refreshed = session ? await refreshedQuery.session(session) : await refreshedQuery;
+      if (refreshed?.lastAssignedSlotEndMinutes != null) {
+        floorMinutes = Math.max(floorMinutes, refreshed.lastAssignedSlotEndMinutes);
+      }
+    }
+
+    if (!slot) {
+      throw new ApiError(
+        409,
+        'Could not reserve a unique appointment slot due to concurrent bookings. Please try again.'
+      );
+    }
+
+    console.log('⏰ [SLOT] Atomically claimed slot:', slot.start, '-', slot.end, 'for token', tokenNumber);
+    return slot;
   }
 
   static generateBookingNumber(doctorId, date, tokenNumber) {
@@ -228,7 +333,7 @@ class QueueService {
           doctor: doctorId,
           date,
           totalTokensIssued: 1,
-          averageConsultationMinutes: averageConsultationMinutes || 15,
+          averageConsultationMinutes: averageConsultationMinutes,
         },
         $push: {
           entries: newEntry,
@@ -287,122 +392,15 @@ class QueueService {
   // =====================================================================
 
   /**
-   * Recomputes the estimated consultation time slot for every still-WAITING
-   * entry in a doctor's queue. Called after any event that changes queue
-   * composition — a completion, a skip, or a cancellation.
+   * Recomputes live estimated consultation times for the doctor's queue.
    *
-   * CRITICAL: This calculation is based ONLY on queue position and the
-   * doctor's consultation duration. It does NOT include:
-   * - Delay tracking or "late by X minutes"
-   * - Early completion tracking or "early by X minutes"
-   * - Running behind / ahead status
-   *
-   * The estimated time shown to patients is a simple time range:
-   * "Your consultation is estimated for 12:30 PM – 12:45 PM"
-   *
-   * Deliberately applies to ALL waiting entries, not just ones Reception
-   * has released (isInDoctorQueue) — queue POSITION reflects booking
-   * order and is meaningful even to a patient who hasn't arrived yet;
-   * "who's callable right now" is a separate, stricter concern (see
-   * callNext below).
-   *
-   * See the complexity analysis in the accompanying documentation for a
-   * full breakdown — summary: O(n log n) time, O(1) additional DB round
-   * trips (never N+1), where n = patients waiting for this doctor today.
+   * SINGLE SOURCE OF TRUTH: delegates entirely to QueueScheduler so booking,
+   * reception, doctor-assistant, cancellation, and cron paths cannot drift
+   * into competing formulas. Booked timeSlot values are never overwritten
+   * here — only estimatedConsultation* fields are recalculated.
    */
   static async recalculateQueue(doctorId, date, session) {
-    const queueQuery = Queue.findOne({ doctor: doctorId, date });
-    const queue = session ? await queueQuery.session(session) : await queueQuery;
-    if (!queue) return null;
-
-    const waiting = queue.entries
-      .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING)
-      .sort((a, b) => a.tokenNumber - b.tokenNumber);
-
-    if (waiting.length === 0) return queue;
-
-    // Fetch each waiting entry's originally scheduled slot in ONE query
-    // (not populate-on-the-queue-then-save, which risks Mongoose
-    // re-serializing populated subdocuments incorrectly on save; and not
-    // N+1 individual lookups either).
-    //
-    // MUST use the same session as the caller: bookAppointment calls this
-    // mid-transaction, right after creating the Appointment — without
-    // `.session(session)` here, this query can't see that just-created,
-    // not-yet-committed document, `slots` comes back missing it, and
-    // `slotById.get(...)` returns undefined below.
-    const appointmentIds = waiting.map((e) => e.appointment);
-    const slotsQuery = Appointment.find({ _id: { $in: appointmentIds } }, 'timeSlot');
-    const slots = await (session ? slotsQuery.session(session) : slotsQuery).lean();
-    const slotById = new Map(slots.map((a) => [a._id.toString(), a.timeSlot]));
-
-    // Track which appointments to update so we can sync estimated times
-    const appointmentsToUpdate = [];
-
-    waiting.forEach((entry, index) => {
-      const position = index + 1; // 1 = next to be called
-      const timeSlot = slotById.get(entry.appointment.toString());
-      if (!timeSlot) {
-        // Should be unreachable now that this query is session-aware, but
-        // fail loudly and specifically rather than crashing on `.start`
-        // of undefined if some future change reintroduces the gap.
-        throw new ApiError(
-          500,
-          `Queue recalculation couldn't find the scheduled time slot for appointment ${entry.appointment}.`
-        );
-      }
-
-      // Use the appointment's allocated timeSlot. Do not offset again by
-      // (position - 1) * duration — that double-shifted sequential bookings
-      // and, when combined with the old "snap all to now" bug, hid duplicates
-      // in estimates while timeSlot.start stayed identical.
-      const estStart = combineDateAndTime(date, timeSlot.start);
-      const estEnd = combineDateAndTime(date, timeSlot.end);
-
-      // Store persistent estimated consultation time for patient display
-      entry.estimatedConsultationStartTime = estStart;
-      entry.estimatedConsultationEndTime = estEnd;
-
-      // Maintain legacy fields for internal calculations (not shown to patient)
-      entry.queuePosition = position;
-      // Legacy: estimatedReportingTime used by old display logic
-      entry.estimatedReportingTime = estStart;
-      // Legacy: estimatedWaitingMinutes used by old display logic
-      const now = Date.now();
-      entry.estimatedWaitingMinutes = Math.max(Math.round((estStart.getTime() - now) / 60000), 0);
-
-      // Track for appointment sync
-      appointmentsToUpdate.push({
-        appointmentId: entry.appointment,
-        estimatedConsultationStartTime: estStart,
-        estimatedConsultationEndTime: estEnd,
-      });
-    });
-
-    await queue.save({ session });
-
-    // IMPORTANT: Sync estimated times back to Appointment documents.
-    // This ensures patients can query their appointment and get the
-    // latest estimate without relying on Socket.IO or frontend state.
-    if (appointmentsToUpdate.length > 0) {
-      for (const update of appointmentsToUpdate) {
-        const appointmentQuery = Appointment.findByIdAndUpdate(
-          update.appointmentId,
-          {
-            estimatedConsultationStartTime: update.estimatedConsultationStartTime,
-            estimatedConsultationEndTime: update.estimatedConsultationEndTime,
-          },
-          { new: true }
-        );
-        if (session) {
-          await appointmentQuery.session(session);
-        } else {
-          await appointmentQuery;
-        }
-      }
-    }
-
-    return queue;
+    return QueueScheduler.recalculateQueue(doctorId, date, session);
   }
 
   // =====================================================================
@@ -466,8 +464,12 @@ class QueueService {
         `Cannot start consultation — patient not ready (current queue status: "${entry.status}").`
       );
     }
+    const now = getHospitalNow();
     entry.status = QUEUE_ENTRY_STATUS.IN_CONSULTATION;
-    entry.consultationStartedAt = new Date();
+    entry.consultationStartedAt = now;
+    // QueueScheduler reads actualStartDateTime when cascading live estimates.
+    entry.actualStartDateTime = now;
+    entry.actualStartTime = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
     console.log('✅ [QUEUE] Entry status updated to IN_CONSULTATION');
     return entry;
   }
@@ -481,10 +483,15 @@ class QueueService {
         `Cannot complete — consultation has not been started (current queue status: "${entry.status}").`
       );
     }
+    const now = getHospitalNow();
     entry.status = QUEUE_ENTRY_STATUS.COMPLETED;
-    entry.completedAt = new Date();
+    entry.completedAt = now;
+    entry.actualEndDateTime = now;
+    entry.actualEndTime = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
 
-    const actualMinutes = Math.max((entry.completedAt - entry.consultationStartedAt) / 60000, 1);
+    const startedAt = entry.actualStartDateTime || entry.consultationStartedAt || now;
+    const actualMinutes = Math.max((now - startedAt) / 60000, 1);
+    entry.actualDurationMinutes = Math.round(actualMinutes);
     QueueService.applyCompletionToAverage(queue, actualMinutes);
 
     return { entry, actualMinutes };

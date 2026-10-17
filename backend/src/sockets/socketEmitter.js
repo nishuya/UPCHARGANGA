@@ -78,16 +78,24 @@ const broadcastQueueUpdate = ({ doctorId, date, queue }) => {
  */
 const notifyEstimatedConsultationTimes = (queue) => {
   const io = getIO();
+  const etaStatuses = new Set([
+    QUEUE_ENTRY_STATUS.WAITING,
+    QUEUE_ENTRY_STATUS.PENDING,
+    QUEUE_ENTRY_STATUS.CALLED,
+  ]);
+
   queue.entries
-    .filter((e) => e.status === QUEUE_ENTRY_STATUS.WAITING && e.estimatedConsultationStartTime != null)
+    .filter(
+      (e) => etaStatuses.has(e.status) && e.estimatedConsultationStartTime != null
+    )
     .forEach((entry) => {
       io.to(patientRoom(entry.patient)).emit(SOCKET_EVENTS.PATIENT_ETA_UPDATED, {
         appointmentId: entry.appointment,
-        // Patient-facing display: simple time range, no delay/early calculations
+        // Patient-facing display: simple time range from the authoritative scheduler
         estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
         estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
-        // Queue position is informational only (not shown as "wait time in minutes")
         queuePosition: entry.queuePosition,
+        status: entry.status,
         timestamp: new Date(),
       });
     });

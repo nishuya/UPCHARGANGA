@@ -160,11 +160,28 @@ const AppointmentTrackPage = () => {
             </dd>
           </div>
           <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
-            <dt className="text-body-sm text-neutral-600">Time slot</dt>
+            <dt className="text-body-sm text-neutral-600">Booked time slot</dt>
             <dd className="text-body font-semibold text-neutral-900">
               {appointment.timeSlot?.start}–{appointment.timeSlot?.end}
             </dd>
           </div>
+          {(live?.estimatedConsultationStartTime ||
+            appointment.estimatedConsultationStartTime) && (
+            <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
+              <dt className="text-body-sm text-neutral-600">Estimated consultation</dt>
+              <dd className="text-body font-semibold text-neutral-900">
+                {formatTime(
+                  live?.estimatedConsultationStartTime ||
+                    appointment.estimatedConsultationStartTime
+                )}
+                {' – '}
+                {formatTime(
+                  live?.estimatedConsultationEndTime ||
+                    appointment.estimatedConsultationEndTime
+                )}
+              </dd>
+            </div>
+          )}
         </dl>
       </Card>
 

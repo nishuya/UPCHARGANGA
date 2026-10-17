@@ -160,7 +160,9 @@ const bookAppointment = async (patientId, payload) => {
         const retryable =
           err?.errorLabels?.includes('TransientTransactionError') ||
           err?.code === 112 ||
-          err?.codeName === 'WriteConflict';
+          err?.code === 11000 ||
+          err?.codeName === 'WriteConflict' ||
+          (err?.statusCode === 409 && /concurrent bookings/i.test(err?.message || ''));
         if (!retryable || attempt === 3) {
           throw err;
         }

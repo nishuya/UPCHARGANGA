@@ -226,6 +226,16 @@ const queueSchema = new Schema(
       type: Number,
       default: 15,
     },
+
+    // Atomically advanced end-of-slot cursor (minutes from midnight) used
+    // when assigning booked timeSlot values. Prevents two concurrent
+    // bookings from reading the same "next free" window and saving
+    // identical start times. Only moves forward — cancellations do not
+    // rewind it (token numbers also never reuse).
+    lastAssignedSlotEndMinutes: {
+      type: Number,
+      default: null,
+    },
   },
   { timestamps: true }
 );

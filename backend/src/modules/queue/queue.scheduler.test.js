@@ -560,7 +560,7 @@ describe('Queue Scheduler - Pending Patient Delays', () => {
     appointmentDate = normalizeDateOnly(appointmentDate);
   });
 
-  test('First patient marked PENDING causes downstream delays (grace period exceeded)', async () => {
+  test('First patient marked PENDING past grace no longer blocks later patients', async () => {
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -629,18 +629,19 @@ describe('Queue Scheduler - Pending Patient Delays', () => {
       const entry1After = queue.entries[1];
       const entry2After = queue.entries[2];
 
-      // Verify downstream delays: patient 2 and 3 should have been pushed later
-      expect(entry1After.estimatedConsultationStartTime.getTime()).toBeGreaterThan(
+      // Past-grace PENDING is deferred: later patients move earlier (or stay),
+      // they must not keep waiting behind an unresolved absent patient.
+      expect(entry1After.estimatedConsultationStartTime.getTime()).toBeLessThanOrEqual(
         baselineEst1.getTime()
       );
-      expect(entry2After.estimatedConsultationStartTime.getTime()).toBeGreaterThan(
+      expect(entry2After.estimatedConsultationStartTime.getTime()).toBeLessThanOrEqual(
         baselineEst2.getTime()
       );
 
-      // Verify delay is roughly 15 minutes (one consultation duration)
-      const delay1 = (entry1After.estimatedConsultationStartTime - baselineEst1) / 60000;
-      expect(delay1).toBeGreaterThan(10); // At least 10 minutes delay
-      expect(delay1).toBeLessThan(20);    // At most 20 minutes delay
+      // Active patients keep unique non-overlapping estimates
+      expect(entry1After.estimatedConsultationStartTime.getTime()).not.toBe(
+        entry2After.estimatedConsultationStartTime.getTime()
+      );
 
       await session.commitTransaction();
     } finally {
@@ -704,16 +705,14 @@ describe('Queue Scheduler - Pending Patient Delays', () => {
       // Record baseline estimate for patient 2
       const baselineEst1 = entry1Before.estimatedConsultationStartTime;
 
-      // Simulate patient 1 consultation: started on time, finished 4 minutes early
-      const now = getHospitalNow();
-      entry0.status = 'in-consultation';
-      entry0.actualStartDateTime = new Date(now.getTime() - 11 * 60000); // Started 11 min ago
-      entry0.consultationStartedAt = entry0.actualStartDateTime;
-
-      // Complete consultation (finished after 11 minutes instead of 15)
+      // Simulate patient 1 consultation on the appointment day: started on
+      // schedule, finished 4 minutes early (11 min instead of 15).
+      const scheduledStart = combineDateAndTime(appointmentDate, '09:00');
       entry0.status = 'completed';
-      entry0.actualEndDateTime = now;
-      entry0.completedAt = now;
+      entry0.actualStartDateTime = scheduledStart;
+      entry0.consultationStartedAt = scheduledStart;
+      entry0.actualEndDateTime = new Date(scheduledStart.getTime() + 11 * 60000);
+      entry0.completedAt = entry0.actualEndDateTime;
       const actualMinutes = 11;
       entry0.actualDurationMinutes = actualMinutes;
 
