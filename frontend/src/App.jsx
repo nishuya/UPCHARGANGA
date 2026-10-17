@@ -12,10 +12,27 @@ import FullScreenLoader from './components/common/FullScreenLoader';
  * login pages during the silent refresh attempt.
  */
 const AppContent = () => {
-  const { isLoading } = useAuth();
+  const { isLoading, initializationError, retrySession } = useAuth();
 
   if (isLoading) {
     return <FullScreenLoader />;
+  }
+
+  if (initializationError) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-surface px-6 text-center">
+        <p role="alert" className="text-ink">
+          {initializationError}
+        </p>
+        <button
+          type="button"
+          onClick={retrySession}
+          className="rounded-md bg-primary px-4 py-2 font-medium text-white hover:bg-primary-hover"
+        >
+          Try again
+        </button>
+      </main>
+    );
   }
 
   return <AppRoutes />;

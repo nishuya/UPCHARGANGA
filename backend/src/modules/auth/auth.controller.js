@@ -42,9 +42,11 @@ const refreshToken = asyncHandler(async (req, res) => {
       .cookie('refreshToken', newRefreshToken, getRefreshTokenCookieOptions())
       .json(new ApiResponse(200, { user, accessToken }, 'Token refreshed.'));
   } catch (error) {
-    // If the refresh token is missing, expired, invalid, or revoked,
-    // immediately clear the cookie in the browser so stale cookies do not linger.
-    clearRefreshTokenCookie(res);
+    // Only invalid sessions should lose their persistent credential. Keep it
+    // when refresh fails because of a temporary server or infrastructure error.
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      clearRefreshTokenCookie(res);
+    }
     throw error;
   }
 });

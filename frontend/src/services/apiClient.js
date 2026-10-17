@@ -97,12 +97,13 @@ apiClient.interceptors.response.use(
           config.headers.Authorization = `Bearer ${token}`;
           return apiClient(config);
         }
-      } catch {
-        // Refresh itself failed (refresh token expired/invalid/revoked) —
-        // clear local token state and notify AuthContext.
-        clearAccessToken();
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('auth:logout'));
+      } catch (refreshError) {
+        const refreshStatus = refreshError?.response?.status;
+        if (refreshStatus === 401 || refreshStatus === 403) {
+          clearAccessToken();
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('auth:logout'));
+          }
         }
       }
     }

@@ -1,5 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getAccessToken, setAccessToken, clearAccessToken } from '../services/tokenStore';
+import {
+  EXPLICIT_LOGOUT_KEY,
+  clearAccessToken,
+  clearExplicitLogout,
+  getAccessToken,
+  hasExplicitLogout,
+  markExplicitLogout,
+  setAccessToken,
+} from '../services/tokenStore';
 import { queryClient } from '../services/queryClient';
 import { connectSocket, disconnectSocket } from '../sockets/socketClient';
 import { loginRequest, logoutRequest, refreshTokenRequest } from '../features/auth/services/auth.api';
@@ -13,14 +21,17 @@ const AuthContext = createContext(undefined);
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until bootstrap finishes
+  const [initializationError, setInitializationError] = useState(null);
 
   const handleAuthenticated = useCallback((data) => {
     if (!data?.accessToken || !data?.user) {
-      return;
+      return false;
     }
+    clearExplicitLogout();
     setAccessToken(data.accessToken);
     setUser(data.user);
     connectSocket();
+    return true;
   }, []);
 
   const clearSession = useCallback(() => {
@@ -33,7 +44,9 @@ export const AuthProvider = ({ children }) => {
   const login = useCallback(
     async (credentials) => {
       const { data } = await loginRequest(credentials);
-      handleAuthenticated(data.data);
+      if (!handleAuthenticated(data?.data)) {
+        throw new Error('The login response did not contain a valid user session.');
+      }
       return data.data.user;
     },
     [handleAuthenticated]
@@ -44,6 +57,9 @@ export const AuthProvider = ({ children }) => {
     // can identify the user even if only the Authorization header or only the
     // refreshToken cookie is available.
     const tokenBeforeLogout = getAccessToken();
+    if (!markExplicitLogout()) {
+      console.warn('Could not persist the explicit logout marker in browser storage.');
+    }
 
     // Immediately clear local auth state, in-memory token, socket, and query cache
     // so protected routes stop rendering authenticated content immediately.
@@ -61,43 +77,70 @@ export const AuthProvider = ({ children }) => {
     }
   }, [clearSession]);
 
+  const restoreSession = useCallback(async (isCurrent = () => true) => {
+    setIsLoading(true);
+    setInitializationError(null);
+    try {
+      const { data } = await refreshTokenRequest();
+      if (!isCurrent()) return;
+      if (!handleAuthenticated(data?.data)) {
+        throw new Error('The session response did not contain a valid user session.');
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      const status = error?.response?.status;
+      if (error?.isCancelledByLogout || status === 401 || status === 403) {
+        clearSession();
+      } else {
+        setInitializationError(
+          'Unable to restore your session. Check your connection and try again.'
+        );
+      }
+    } finally {
+      if (isCurrent()) {
+        setIsLoading(false);
+      }
+    }
+  }, [clearSession, handleAuthenticated]);
+
+  const retrySession = useCallback(() => restoreSession(), [restoreSession]);
+
   // On initial app load or page refresh, restore the session using the
   // persistent httpOnly refresh-token cookie before ProtectedRoute makes
   // any redirect decisions.
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      try {
-        const { data } = await refreshTokenRequest();
-        if (!cancelled && data?.data?.user && data?.data?.accessToken) {
-          handleAuthenticated(data.data);
-        } else if (!cancelled) {
-          clearSession();
-        }
-      } catch (error) {
-        if (!cancelled) {
-          clearSession();
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    })();
+    if (hasExplicitLogout()) {
+      clearSession();
+      setIsLoading(false);
+    } else {
+      restoreSession(() => !cancelled);
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [handleAuthenticated, clearSession]);
+  }, [clearSession, restoreSession]);
 
   useEffect(() => {
-    const handleForcedLogout = () => clearSession();
+    const handleForcedLogout = () => {
+      clearSession();
+      setInitializationError(null);
+      setIsLoading(false);
+    };
+    const handleStorageChange = (event) => {
+      if (event.key === EXPLICIT_LOGOUT_KEY && event.newValue === '1') {
+        handleForcedLogout();
+      }
+    };
     window.addEventListener('auth:logout', handleForcedLogout);
     window.addEventListener('socket:auth-failed', handleForcedLogout);
+    window.addEventListener('storage', handleStorageChange);
     return () => {
       window.removeEventListener('auth:logout', handleForcedLogout);
       window.removeEventListener('socket:auth-failed', handleForcedLogout);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, [clearSession]);
 
@@ -106,11 +149,13 @@ export const AuthProvider = ({ children }) => {
       user,
       isAuthenticated: !!user,
       isLoading,
+      initializationError,
       login,
       logout,
       clearSession,
+      retrySession,
     }),
-    [user, isLoading, login, logout, clearSession]
+    [user, isLoading, initializationError, login, logout, clearSession, retrySession]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
