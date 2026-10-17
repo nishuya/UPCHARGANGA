@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import apiClient from '../../../services/apiClient';
 import { getSocket } from '../../../sockets/socketClient';
@@ -16,9 +16,9 @@ import { SOCKET_EVENTS } from '../../../constants/socketEvents';
  * over the REST snapshot rather than replacing it, since the socket
  * payloads are deliberately small deltas, not the full appointment.
  *
- * The patient sees their estimated consultation time slot and queue position.
- * Same-day estimates are refreshed periodically against the current hospital
- * time; no client-side countdown is displayed.
+ * The patient sees the backend's current queue estimate and status. Same-day
+ * estimates are refreshed periodically; the local clock is used only to hide
+ * an estimate as soon as it has passed while the next server update is pending.
  */
 
 /**
@@ -31,14 +31,21 @@ const fetchAppointmentQueueEntry = async (appointmentId) => {
 
 const useAppointmentTracking = (appointmentId) => {
   const [live, setLive] = useState(null);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
 
-  // Initial fetch of queue entry for this appointment
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Polling keeps time-based estimates current even when no queue event fires.
   const { data: queueEntry } = useQuery({
     queryKey: ['appointmentQueueEntry', appointmentId],
     queryFn: () => fetchAppointmentQueueEntry(appointmentId),
     enabled: !!appointmentId,
-    refetchInterval: 30000, // Refetch every 30 seconds as fallback
-    staleTime: 10000, // Data is stale after 10 seconds
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
   });
 
   // Initialize live data from queue entry
@@ -46,11 +53,9 @@ const useAppointmentTracking = (appointmentId) => {
     if (queueEntry) {
       setLive((prev) => ({
         ...prev,
+        ...queueEntry,
         appointmentId,
-        estimatedConsultationStartTime: queueEntry.estimatedConsultationStartTime,
-        estimatedConsultationEndTime: queueEntry.estimatedConsultationEndTime,
-        queuePosition: queueEntry.queuePosition,
-        queueStatus: queueEntry.status,
+        called: queueEntry.estimateStatus === 'called',
       }));
     }
   }, [queueEntry, appointmentId]);
@@ -63,19 +68,40 @@ const useAppointmentTracking = (appointmentId) => {
       if (payload?.appointmentId && payload.appointmentId !== appointmentId) return;
       // Only update if this is a meaningful change (different estimated time)
       setLive((prev) => {
-        if (prev &&
-            prev.estimatedConsultationStartTime === payload.estimatedConsultationStartTime &&
-            prev.estimatedConsultationEndTime === payload.estimatedConsultationEndTime) {
-          // No change in estimated time — skip update to avoid unnecessary re-renders
+        if (
+          prev &&
+          prev.estimatedConsultationStartTime === payload.estimatedConsultationStartTime &&
+          prev.estimatedConsultationEndTime === payload.estimatedConsultationEndTime &&
+          prev.queuePosition === payload.queuePosition &&
+          prev.queueEntriesAhead === payload.queueEntriesAhead &&
+          prev.currentServingTokenNumber === payload.currentServingTokenNumber &&
+          prev.currentServingStatus === payload.currentServingStatus &&
+          prev.currentTokenNumber === payload.currentTokenNumber &&
+          prev.averageConsultationMinutes === payload.averageConsultationMinutes &&
+          prev.status === payload.status &&
+          prev.estimateStatus === payload.estimateStatus &&
+          prev.queueStatus === payload.queueStatus
+        ) {
           return prev;
         }
-        return { ...prev, ...payload };
+        return {
+          ...prev,
+          ...payload,
+          called: payload.estimateStatus === 'called',
+        };
       });
     };
 
     const handleCalled = (payload) => {
       if (payload?.appointmentId && payload.appointmentId !== appointmentId) return;
-      setLive((prev) => ({ ...prev, ...payload, called: true }));
+      setLive((prev) => ({
+        ...prev,
+        ...payload,
+        estimateStatus: 'called',
+        estimatedConsultationStartTime: null,
+        estimatedConsultationEndTime: null,
+        called: true,
+      }));
     };
 
     socket.on(SOCKET_EVENTS.PATIENT_ETA_UPDATED, handleEtaUpdated);
@@ -87,7 +113,7 @@ const useAppointmentTracking = (appointmentId) => {
     };
   }, [appointmentId]);
 
-  return live;
+  return live ? { ...live, currentTime } : null;
 };
 
 export default useAppointmentTracking;

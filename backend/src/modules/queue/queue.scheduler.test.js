@@ -229,6 +229,80 @@ describe('Queue Scheduler - Sequential Slot Allocation', () => {
     }
   });
 
+  test('Live estimates use the adaptive queue average without persisting the projection', async () => {
+    await Queue.create({
+      hospital: doctor.hospital,
+      department: new mongoose.Types.ObjectId(),
+      doctor: doctor._id,
+      date: appointmentDate,
+      totalTokensIssued: 2,
+      averageConsultationMinutes: 20,
+      entries: [1, 2].map((tokenNumber) => ({
+        appointment: new mongoose.Types.ObjectId(),
+        patient: new mongoose.Types.ObjectId(),
+        tokenNumber,
+        status: 'waiting',
+        scheduledStartTime: addMinutesToTime('09:00', (tokenNumber - 1) * 15),
+        scheduledEndTime: addMinutesToTime('09:00', tokenNumber * 15),
+      })),
+    });
+
+    let queue = await QueueScheduler.recalculateQueue(doctor._id, appointmentDate);
+    expect(queue.entries[1].estimatedStartTime).toBe('09:20');
+
+    queue.averageConsultationMinutes = 30;
+    await queue.save();
+
+    const liveQueue = await QueueScheduler.recalculateQueue(
+      doctor._id,
+      appointmentDate,
+      undefined,
+      { persist: false }
+    );
+    expect(liveQueue.entries[1].estimatedStartTime).toBe('09:30');
+
+    const storedQueue = await Queue.findOne({ doctor: doctor._id, date: appointmentDate });
+    expect(storedQueue.entries[1].estimatedStartTime).toBe('09:20');
+  });
+
+  test('Waiting patients are estimated after the current consultation and tokens ahead', async () => {
+    await Queue.create({
+      hospital: doctor.hospital,
+      department: new mongoose.Types.ObjectId(),
+      doctor: doctor._id,
+      date: appointmentDate,
+      currentTokenNumber: 1,
+      totalTokensIssued: 3,
+      averageConsultationMinutes: 15,
+      entries: [
+        {
+          appointment: new mongoose.Types.ObjectId(),
+          patient: new mongoose.Types.ObjectId(),
+          tokenNumber: 1,
+          status: 'in-consultation',
+          actualStartDateTime: combineDateAndTime(appointmentDate, '09:45'),
+        },
+        ...[2, 3].map((tokenNumber) => ({
+          appointment: new mongoose.Types.ObjectId(),
+          patient: new mongoose.Types.ObjectId(),
+          tokenNumber,
+          status: 'waiting',
+        })),
+      ],
+    });
+
+    const queue = await QueueScheduler.recalculateQueue(
+      doctor._id,
+      appointmentDate,
+      undefined,
+      { persist: false }
+    );
+
+    expect(queue.entries[1].estimatedStartTime).toBe('10:00');
+    expect(queue.entries[2].estimatedStartTime).toBe('10:15');
+    expect(queue.entries[2].queuePosition).toBe(2);
+  });
+
   test('Attendance timeout is applied only once (idempotent)', async () => {
     // This test verifies the idempotency mechanism
     const session = await mongoose.startSession();

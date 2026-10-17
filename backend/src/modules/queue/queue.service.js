@@ -284,10 +284,10 @@ class QueueService {
    * applied via $setOnInsert — i.e. it seeds a BRAND NEW queue's starting
    * assumption, and is never overwritten on an existing queue (which may
    * already have a live, adapted average — see setAverageConsultationMinutes
-   * and applyCompletionToAverage below for how it's "configurable").
+   * and applyCompletionToAverage below for how it adapts).
    *
    * The entry's estimated consultation time is set based on the scheduled slot
-   * and will be recalculated only when queue composition meaningfully changes.
+   * and is refreshed by the scheduler from the live queue state.
    */
   static async addEntry(
     { hospitalId, departmentId, doctorId, date, appointmentId, patientId, tokenNumber, averageConsultationMinutes, timeSlot },
@@ -303,7 +303,8 @@ class QueueService {
       status: QUEUE_ENTRY_STATUS.WAITING,
       scheduledStartTime: timeSlot.start,
       scheduledEndTime: timeSlot.end,
-      // NEW: Store estimated consultation time for patient display (persistent, not continuously updated)
+      // Seed the queue projection from the booked slot; live patient estimates
+      // are recalculated from queue state by QueueScheduler.
       estimatedConsultationStartTime: combineDateAndTime(date, timeSlot.start),
       estimatedConsultationEndTime: combineDateAndTime(date, timeSlot.end),
       // Legacy fields kept for internal use (not shown to patient)

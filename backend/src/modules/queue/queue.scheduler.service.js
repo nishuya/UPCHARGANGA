@@ -7,7 +7,8 @@
  * QueueService.allocateScheduledSlot and are NOT overwritten here.
  *
  * This service recalculates estimatedConsultationStart/EndTime based on:
- *   - Doctor's configured slotDurationMinutes (never hardcoded)
+ *   - Queue's adaptive average consultation duration, seeded from the doctor's
+ *     configured slotDurationMinutes
  *   - Authoritative token / queue order
  *   - Actual consultation progress (start / completion)
  *   - PENDING patients past the grace period (do not block later patients)
@@ -22,7 +23,6 @@
  */
 
 const Queue = require('./queue.model');
-const Appointment = require('../appointments/appointments.model');
 const Doctor = require('../doctors/doctors.model');
 const ApiError = require('../../errors/ApiError');
 const { resolveConsultationDuration } = require('../../utils/slotAllocation.util');
@@ -37,9 +37,10 @@ const { QUEUE_ENTRY_STATUS, BOOKING_CONSTRAINTS } = require('../../constants/enu
 
 class QueueScheduler {
   /**
-   * MAIN ENTRY POINT — recalculates and persists the entire queue for a doctor/date.
+   * Recalculate the entire queue. API reads may request an in-memory projection
+   * so live estimates are never sourced from a stale persisted snapshot.
    */
-  static async recalculateQueue(doctorId, appointmentDate, session) {
+  static async recalculateQueue(doctorId, appointmentDate, session, { persist = true } = {}) {
     console.log('[SCHEDULER] 🔄 Recalculating queue for doctor:', doctorId, 'date:', appointmentDate);
 
     try {
@@ -66,10 +67,16 @@ class QueueScheduler {
         throw new ApiError(400, 'Doctor not available on this date');
       }
 
-      const consultationMinutes = resolveConsultationDuration(daySchedule);
+      const configuredConsultationMinutes = resolveConsultationDuration(daySchedule);
+      const consultationMinutes =
+        Number.isFinite(queue.averageConsultationMinutes) && queue.averageConsultationMinutes > 0
+          ? queue.averageConsultationMinutes
+          : configuredConsultationMinutes;
       console.log('[SCHEDULER] ⏱️  Consultation duration:', consultationMinutes, 'minutes');
 
-      this._applyPendingAttendanceTimeouts(queue);
+      if (persist) {
+        this._applyPendingAttendanceTimeouts(queue);
+      }
 
       const queueState = this._analyzeQueueState(queue);
       console.log('[SCHEDULER] 📊 Queue state:', {
@@ -111,28 +118,18 @@ class QueueScheduler {
         );
       }
 
-      if (session) {
-        await queue.save({ session });
-      } else {
-        await queue.save();
-      }
-      console.log('[SCHEDULER] ✅ Queue persisted successfully');
-
-      const toSync = [...queueState.active, ...queueState.deferredPending];
-      for (const entry of toSync) {
-        if (entry.estimatedConsultationStartTime && entry.estimatedConsultationEndTime) {
-          const updateQuery = Appointment.findByIdAndUpdate(entry.appointment, {
-            estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
-            estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
-          });
-          if (session) {
-            await updateQuery.session(session);
-          } else {
-            await updateQuery;
-          }
+      if (persist) {
+        if (session) {
+          await queue.save({ session });
+        } else {
+          await queue.save();
         }
       }
-      console.log('[SCHEDULER] ✅ Appointment estimated times synced');
+      console.log(
+        persist
+          ? '[SCHEDULER] ✅ Queue persisted successfully'
+          : '[SCHEDULER] ✅ Live queue estimate calculated'
+      );
 
       return queue;
     } catch (error) {
@@ -195,12 +192,12 @@ class QueueScheduler {
         continue;
       }
 
-      if (
-        [QUEUE_ENTRY_STATUS.COMPLETED, QUEUE_ENTRY_STATUS.SKIPPED, QUEUE_ENTRY_STATUS.NO_SHOW].includes(
-          entry.status
-        )
-      ) {
+      if (entry.status === QUEUE_ENTRY_STATUS.COMPLETED) {
         completed.push(entry);
+        continue;
+      }
+
+      if ([QUEUE_ENTRY_STATUS.SKIPPED, QUEUE_ENTRY_STATUS.NO_SHOW].includes(entry.status)) {
         continue;
       }
 
@@ -257,7 +254,7 @@ class QueueScheduler {
    * appointment date may be a future clinic day in tests/simulations.
    */
   static _progressOnAppointmentDay(progressDate, appointmentDate, isToday, now) {
-    const timeStr = this._datetimeToTimeString(progressDate);
+    const timeStr = this._datetimeToTimeString(this._ceilToMinute(progressDate));
     let onDay = combineDateAndTime(appointmentDate, timeStr);
     if (isToday && onDay < now) {
       onDay = new Date(now.getTime());
@@ -332,7 +329,7 @@ class QueueScheduler {
 
     console.log('[SCHEDULER] 📋 Calculating slots for', entries.length, 'patients from', nextSlotStart);
 
-    let currentSlotStart = new Date(nextSlotStart.getTime());
+    let currentSlotStart = this._ceilToMinute(nextSlotStart);
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -375,6 +372,16 @@ class QueueScheduler {
     const hours = String(datetime.getUTCHours()).padStart(2, '0');
     const minutes = String(datetime.getUTCMinutes()).padStart(2, '0');
     return `${hours}:${minutes}`;
+  }
+
+  static _ceilToMinute(datetime) {
+    const rounded = new Date(datetime.getTime());
+    const hasRemainder = rounded.getUTCSeconds() > 0 || rounded.getUTCMilliseconds() > 0;
+    rounded.setUTCSeconds(0, 0);
+    if (hasRemainder) {
+      rounded.setUTCMinutes(rounded.getUTCMinutes() + 1);
+    }
+    return rounded;
   }
 
   static _getDaySchedule(doctor, appointmentDate) {

@@ -251,10 +251,9 @@ const appointmentSchema = new Schema(
       default: null,
     },
 
-    // --- ESTIMATED CONSULTATION TIME (simplified display) ---
-    // Persistent time slots shown to the patient based on queue position
-    // Calculated at booking and updated only when queue composition meaningfully changes.
-    // Never includes delay/early calculations — just the scheduled or recalculated slot.
+    // --- LEGACY ESTIMATED CONSULTATION SNAPSHOT ---
+    // Retained for compatibility with existing records; live patient estimates
+    // are calculated from the current queue and are not read from these fields.
     estimatedConsultationStartTime: {
       type: Date,
       default: null,

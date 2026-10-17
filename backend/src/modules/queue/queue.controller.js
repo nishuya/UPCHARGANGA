@@ -176,14 +176,19 @@ const callNextPatient = async (req, res) => {
   try {
     const { queueId } = req.params;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const queue = await Queue.findById(queueId).session(session);
       if (!queue) {
         throw new ApiError(404, 'Queue not found');
       }
 
-      const calledEntry = QueueService.callNext(queue);
+      const calledEntry = await QueueService.callNext(queue);
       await queue.save({ session });
+      const recalculatedQueue = await QueueScheduler.recalculateQueue(
+        queue.doctor,
+        queue.date,
+        session
+      );
 
       // Notify patient they've been called
       notifyPatientCalled({
@@ -194,9 +199,9 @@ const callNextPatient = async (req, res) => {
 
       // Broadcast queue update (currentTokenNumber changed)
       broadcastQueueRecalculation({
-        doctorId: queue.doctor,
-        date: queue.date,
-        queue,
+        doctorId: recalculatedQueue.doctor,
+        date: recalculatedQueue.date,
+        queue: recalculatedQueue,
       });
 
       return res.status(200).json({
@@ -223,7 +228,7 @@ const startConsultation = async (req, res) => {
   try {
     const { queueId, entryId } = req.params;
 
-    return withTransaction(async (session) => {
+    const result = await withTransaction(async (session) => {
       const queue = await Queue.findById(queueId).session(session);
       if (!queue) {
         throw new ApiError(404, 'Queue not found');
@@ -236,13 +241,27 @@ const startConsultation = async (req, res) => {
 
       // Record actual start
       await QueueScheduler.recordConsultationStart(queueId, entryId, session);
-      const updated = await Queue.findById(queueId).session(session);
+      const recalculatedQueue = await QueueScheduler.recalculateQueue(
+        queue.doctor,
+        queue.date,
+        session
+      );
 
-      // No broadcast needed yet — patient is now "in consultation" but future queue unchanged
-      return res.status(200).json({
-        message: 'Consultation started',
-        entry: updated.entries.id(entryId),
-      });
+      return {
+        entry: recalculatedQueue.entries.id(entryId),
+        queue: recalculatedQueue,
+      };
+    });
+
+    broadcastQueueRecalculation({
+      doctorId: result.queue.doctor,
+      date: result.queue.date,
+      queue: result.queue,
+    });
+
+    return res.status(200).json({
+      message: 'Consultation started',
+      entry: result.entry,
     });
   } catch (error) {
     console.error('[QUEUE] Error starting consultation:', error);
@@ -385,13 +404,14 @@ const resumeQueue = async (req, res) => {
     QueueService.resume(queue);
     await queue.save();
 
+    const recalculatedQueue = await QueueScheduler.recalculateQueue(queue.doctor, queue.date);
     broadcastQueueRecalculation({
       doctorId: queue.doctor,
       date: queue.date,
-      queue,
+      queue: recalculatedQueue,
     });
 
-    res.status(200).json({ message: 'Queue resumed', status: queue.status });
+    res.status(200).json({ message: 'Queue resumed', status: recalculatedQueue.status });
   } catch (error) {
     console.error('[QUEUE] Error resuming queue:', error);
     res.status(error.statusCode || 500).json({ error: error.message });

@@ -7,7 +7,6 @@ const withTransaction = require('../../utils/withTransaction.util');
 const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
 const {
   notifyPatientCalled,
-  broadcastQueueUpdate,
   broadcastQueueRecalculation,
 } = require('../../sockets/socketEmitter');
 const { APPOINTMENT_STATUS, QUEUE_ENTRY_STATUS } = require('../../constants/enums');
@@ -337,9 +336,7 @@ const pauseQueue = async (doctorId, dateInput, requesterHospitalId, requesterAss
   QueueService.pause(queue);
   await queue.save();
 
-  // Status-only change — nobody's position or ETA moved, so the lighter
-  // broadcast (no per-patient ETA push) is the correct one here.
-  broadcastQueueUpdate({ doctorId: doctor._id, date: normalizedDate, queue });
+  broadcastQueueRecalculation({ doctorId: doctor._id, date: normalizedDate, queue });
 
   return queue;
 };
@@ -363,9 +360,14 @@ const resumeQueue = async (doctorId, dateInput, requesterHospitalId, requesterAs
   QueueService.resume(queue);
   await queue.save();
 
-  broadcastQueueUpdate({ doctorId: doctor._id, date: normalizedDate, queue });
+  const recalculatedQueue = await QueueService.recalculateQueue(doctor._id, normalizedDate);
+  broadcastQueueRecalculation({
+    doctorId: doctor._id,
+    date: normalizedDate,
+    queue: recalculatedQueue,
+  });
 
-  return queue;
+  return recalculatedQueue || queue;
 };
 
 // ---------------------------------------------------------------------

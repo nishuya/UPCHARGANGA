@@ -210,7 +210,6 @@ const bookAppointment = async (patientId, payload) => {
 
     // Calculate cutoff time: appointment start time + CONSULTATION_WINDOW_HOURS
     const appointmentStartTime = combineDateAndTime(normalizedDate, timeSlot.start);
-    const appointmentEndTime = combineDateAndTime(normalizedDate, timeSlot.end);
     const cutoffTime = new Date(appointmentStartTime);
     cutoffTime.setUTCHours(cutoffTime.getUTCHours() + BOOKING_CONSTRAINTS.CONSULTATION_WINDOW_HOURS);
 
@@ -234,9 +233,6 @@ const bookAppointment = async (patientId, payload) => {
           createdBy: patientId,
           cutoffTime,
           isActive: true,
-          // NEW: Set persistent estimated consultation times for patient display
-          estimatedConsultationStartTime: appointmentStartTime,
-          estimatedConsultationEndTime: appointmentEndTime,
         },
       ],
       { session }
@@ -369,7 +365,7 @@ const cancelMyAppointment = async (patientId, appointmentId, cancellationReason)
   // Only block if appointment is COMPLETED by the doctor
   console.log('✅ [CANCEL] Appointment can be cancelled (not completed yet)');
 
-  return withTransaction(async (session) => {
+  const result = await withTransaction(async (session) => {
     appointment.status = APPOINTMENT_STATUS.CANCELLED;
     appointment.cancelledBy = patientId;
     appointment.cancellationReason = cancellationReason || null;
@@ -383,15 +379,25 @@ const cancelMyAppointment = async (patientId, appointmentId, cancellationReason)
     );
     console.log('📋 [CANCEL] Queue entry marked as SKIPPED');
 
-    await QueueService.recalculateQueue(appointment.doctor, appointment.appointmentDate, session);
+    const recalculatedQueue = await QueueService.recalculateQueue(
+      appointment.doctor,
+      appointment.appointmentDate,
+      session
+    );
     console.log('🔄 [CANCEL] Queue recalculated');
 
     console.log('✅ [CANCEL] Cancellation complete');
-    return appointment;
+    return { appointment, recalculatedQueue };
   });
-}
 
-  
+  broadcastQueueRecalculation({
+    doctorId: appointment.doctor,
+    date: appointment.appointmentDate,
+    queue: result.recalculatedQueue,
+  });
+
+  return result.appointment;
+};
 
 module.exports = {
   bookAppointment,

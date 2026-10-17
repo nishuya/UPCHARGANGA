@@ -22,6 +22,7 @@ const {
   normalizeDateOnly,
   getHospitalNow,
   isSameUTCDate,
+  getWeekdayName,
 } = require('../../utils/datetime.util');
 const { APPOINTMENT_STATUS } = require('../../constants/enums');
 
@@ -180,57 +181,161 @@ const getDoctorAppointmentStats = async (doctorId, { startDate, endDate } = {}) 
  * Used by patient portal to display current queue position and estimated times
  */
 const getQueueEntryForAppointment = async (appointmentId) => {
-  const appointment = await Appointment.findById(appointmentId).select('doctor appointmentDate tokenNumber');
+  const appointment = await Appointment.findById(appointmentId).select(
+    'doctor appointmentDate tokenNumber status'
+  );
   if (!appointment) {
     throw new ApiError(404, 'Appointment not found');
   }
 
-  // Refresh same-day estimates against the current time before returning them.
-  const isAppointmentToday = isSameUTCDate(appointment.appointmentDate, getHospitalNow());
-  const queue = isAppointmentToday
-    ? await QueueScheduler.recalculateQueue(appointment.doctor, appointment.appointmentDate)
-    : await Queue.findOne({
-        doctor: appointment.doctor,
-        date: appointment.appointmentDate,
-      });
+  const appointmentDay = normalizeDateOnly(appointment.appointmentDate);
+  const today = normalizeDateOnly(getHospitalNow());
+  const isAppointmentPast = appointmentDay < today;
+  const isAppointmentToday = isSameUTCDate(appointmentDay, today);
+  const [doctor, existingQueue] = await Promise.all([
+    Doctor.findById(appointment.doctor, 'availability isAvailableToday unavailability isActive'),
+    Queue.findOne({
+      doctor: appointment.doctor,
+      date: appointmentDay,
+    }),
+  ]);
+  const isDoctorUnavailable =
+    !doctor ||
+    doctor.isActive === false ||
+    (isAppointmentToday && doctor.isAvailableToday === false) ||
+    doctor.unavailability?.some((period) => {
+      const start = normalizeDateOnly(period.startDate);
+      const end = normalizeDateOnly(period.endDate);
+      return appointmentDay >= start && appointmentDay <= end;
+    }) ||
+    !doctor.availability?.some((schedule) => schedule.day === getWeekdayName(appointmentDay));
+  const terminalAppointmentStatuses = ['completed', 'cancelled', 'expired', 'no-show'];
+  const noQueueEstimateStatus = terminalAppointmentStatuses.includes(appointment.status)
+    ? appointment.status
+    : isAppointmentPast
+      ? 'past'
+      : isDoctorUnavailable
+        ? 'doctor-unavailable'
+        : 'not-started';
 
-  // Find the queue for this doctor/date
-  if (!queue) {
-    // No queue exists for this doctor/date yet.
+  if (!existingQueue) {
     return {
       appointmentId,
       tokenNumber: appointment.tokenNumber,
-      status: 'waiting',
+      status: appointment.status,
       queuePosition: null,
+      currentServingTokenNumber: null,
+      currentServingStatus: null,
+      currentTokenNumber: 0,
+      averageConsultationMinutes: null,
+      queueStatus: null,
+      estimateStatus: noQueueEstimateStatus,
       estimatedConsultationStartTime: null,
       estimatedConsultationEndTime: null,
+      updatedAt: new Date(),
     };
   }
 
-  // Find the entry for this appointment
+  // Rebuild the live projection from the queue's current progress on today and
+  // future appointment dates. The appointment's legacy ETA fields are never
+  // consulted or updated.
+  const queue =
+    !isAppointmentPast && !isDoctorUnavailable
+      ? await QueueScheduler.recalculateQueue(appointment.doctor, appointmentDay, undefined, {
+          persist: false,
+        })
+      : existingQueue;
+
+  if (!queue) {
+    return {
+      appointmentId,
+      tokenNumber: appointment.tokenNumber,
+      status: appointment.status,
+      queuePosition: null,
+      currentServingTokenNumber: null,
+      currentServingStatus: null,
+      currentTokenNumber: 0,
+      averageConsultationMinutes: null,
+      queueStatus: null,
+      estimateStatus: noQueueEstimateStatus,
+      estimatedConsultationStartTime: null,
+      estimatedConsultationEndTime: null,
+      updatedAt: new Date(),
+    };
+  }
+
   const entry = queue.entries.find((e) => e.appointment.toString() === appointmentId.toString());
+  const currentlyServingEntry =
+    queue.entries.find((e) => e.status === 'in-consultation') ||
+    queue.entries.find((e) => e.status === 'called');
 
   if (!entry) {
-    // Entry not in queue yet (not reached this doctor/date)
     return {
       appointmentId,
       tokenNumber: appointment.tokenNumber,
-      status: 'pending',
+      status: appointment.status,
       queuePosition: null,
+      currentServingTokenNumber: currentlyServingEntry?.tokenNumber ?? null,
+      currentServingStatus: currentlyServingEntry?.status ?? null,
+      currentTokenNumber: queue.currentTokenNumber,
+      averageConsultationMinutes: queue.averageConsultationMinutes,
+      queueStatus: queue.status,
+      estimateStatus: isAppointmentPast ? 'past' : 'not-started',
       estimatedConsultationStartTime: null,
       estimatedConsultationEndTime: null,
+      updatedAt: new Date(),
     };
   }
 
-  // Return queue entry data
+  const terminalStatuses = ['completed', 'skipped', 'no-show', 'cancelled', 'expired'];
+  const isTerminal = terminalStatuses.includes(entry.status) ||
+    terminalStatuses.includes(appointment.status);
+  const canEstimate =
+    !isAppointmentPast &&
+    !isDoctorUnavailable &&
+    queue.status === 'active' &&
+    !isTerminal &&
+    !['called', 'in-consultation'].includes(entry.status);
+  let estimateStatus = entry.status;
+
+  if (entry.status === 'called') {
+    estimateStatus = 'called';
+  } else if (entry.status === 'in-consultation' || appointment.status === 'in-consultation') {
+    estimateStatus = 'in-consultation';
+  } else if (isTerminal) {
+    estimateStatus = terminalAppointmentStatuses.includes(appointment.status)
+      ? appointment.status
+      : entry.status;
+  } else if (isAppointmentPast) {
+    estimateStatus = 'past';
+  } else if (isDoctorUnavailable) {
+    estimateStatus = 'doctor-unavailable';
+  } else if (queue.status === 'paused') {
+    estimateStatus = 'queue-paused';
+  } else if (queue.status === 'closed') {
+    estimateStatus = 'queue-closed';
+  } else if (entry.queuePosition === 1 && !currentlyServingEntry) {
+    estimateStatus = 'next';
+  } else if (!canEstimate) {
+    estimateStatus = 'waiting';
+  }
+
   return {
     appointmentId,
     tokenNumber: entry.tokenNumber,
     status: entry.status,
-    queuePosition: entry.queuePosition,
-    estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
-    estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
     arrivalStatus: entry.arrivalStatus,
+    queuePosition: isTerminal || isAppointmentPast ? null : entry.queuePosition,
+    queueEntriesAhead: isTerminal || entry.queuePosition == null ? null : Math.max(entry.queuePosition - 1, 0),
+    currentServingTokenNumber: currentlyServingEntry?.tokenNumber ?? null,
+    currentServingStatus: currentlyServingEntry?.status ?? null,
+    currentTokenNumber: queue.currentTokenNumber,
+    averageConsultationMinutes: queue.averageConsultationMinutes,
+    queueStatus: queue.status,
+    estimateStatus,
+    estimatedConsultationStartTime: canEstimate ? entry.estimatedConsultationStartTime : null,
+    estimatedConsultationEndTime: canEstimate ? entry.estimatedConsultationEndTime : null,
+    updatedAt: new Date(),
   };
 };
 

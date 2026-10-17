@@ -7,7 +7,7 @@ import { Spinner, ErrorNotice } from '../components/ui/PStateNotice';
 import { useAppointment, useCancelAppointment } from '../hooks/useAppointments';
 import useAppointmentTracking from '../hooks/useAppointmentTracking';
 import { ROUTES } from '../../../constants/routePaths';
-import { formatHospitalTime } from '../../../utils/dateTime';
+import { formatHospitalTime, hasHospitalEstimatePassed } from '../../../utils/dateTime';
 
 const CANCELLABLE_STATUSES = ['pending', 'confirmed', 'checked-in'];
 
@@ -17,6 +17,22 @@ const formatDate = (value) =>
     month: 'short',
     year: 'numeric',
   });
+
+const ESTIMATE_STATUS_MESSAGES = {
+  called: 'Please proceed to consultation',
+  'in-consultation': 'Your consultation is in progress',
+  next: 'Your turn is next',
+  completed: 'Consultation completed',
+  skipped: 'This appointment was skipped. Please contact reception.',
+  'no-show': 'This appointment was marked no-show. Please contact reception.',
+  cancelled: 'Appointment cancelled',
+  expired: 'Appointment expired',
+  'queue-paused': 'Queue is paused. Your estimate will update when it resumes.',
+  'queue-closed': 'The queue is closed.',
+  'doctor-unavailable': 'The doctor is currently unavailable. Please contact reception.',
+  past: 'The appointment date has passed.',
+  'not-started': 'An estimate will appear when the queue opens.',
+};
 
 /**
  * Premium UpcharGanga Appointment Tracking Page — Responsive
@@ -48,6 +64,17 @@ const AppointmentTrackPage = () => {
   }
 
   const canCancel = CANCELLABLE_STATUSES.includes(appointment.status);
+  const estimateHasPassed = hasHospitalEstimatePassed(
+    live?.estimatedConsultationStartTime,
+    live?.currentTime
+  );
+  const hasLiveEstimate =
+    live?.estimatedConsultationStartTime != null &&
+    live?.estimatedConsultationEndTime != null &&
+    !estimateHasPassed;
+  const estimateMessage =
+    ESTIMATE_STATUS_MESSAGES[live?.estimateStatus] ||
+    (estimateHasPassed ? 'Updating estimate…' : null);
 
   const handleCancel = async () => {
     try {
@@ -100,13 +127,19 @@ const AppointmentTrackPage = () => {
         </div>
 
         {/* Estimated Consultation Time */}
-        {live?.estimatedConsultationStartTime != null &&
-        live?.estimatedConsultationEndTime != null ? (
+        {hasLiveEstimate ? (
           <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Estimated consultation time</p>
             <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
               {formatHospitalTime(live.estimatedConsultationStartTime)} –{' '}
               {formatHospitalTime(live.estimatedConsultationEndTime)}
+            </p>
+          </div>
+        ) : estimateMessage ? (
+          <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
+            <p className="text-caption text-neutral-600">Estimated consultation</p>
+            <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
+              {estimateMessage}
             </p>
           </div>
         ) : appointment.timeSlot ? (
@@ -159,19 +192,18 @@ const AppointmentTrackPage = () => {
               {appointment.timeSlot?.start}–{appointment.timeSlot?.end}
             </dd>
           </div>
-          {(live?.estimatedConsultationStartTime ||
-            appointment.estimatedConsultationStartTime) && (
+          {(hasLiveEstimate || estimateMessage) && (
             <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
               <dt className="text-body-sm text-neutral-600">Estimated consultation</dt>
               <dd className="text-body font-semibold text-neutral-900">
-                {formatHospitalTime(
-                  live?.estimatedConsultationStartTime ||
-                    appointment.estimatedConsultationStartTime
-                )}
-                {' – '}
-                {formatHospitalTime(
-                  live?.estimatedConsultationEndTime ||
-                    appointment.estimatedConsultationEndTime
+                {hasLiveEstimate ? (
+                  <>
+                    {formatHospitalTime(live.estimatedConsultationStartTime)}
+                    {' – '}
+                    {formatHospitalTime(live.estimatedConsultationEndTime)}
+                  </>
+                ) : (
+                  estimateMessage
                 )}
               </dd>
             </div>

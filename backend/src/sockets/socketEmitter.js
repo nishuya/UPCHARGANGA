@@ -39,6 +39,10 @@ const notifyPatientCalled = ({ patientId, appointmentId, tokenNumber }) => {
   getIO().to(patientRoom(patientId)).emit(SOCKET_EVENTS.PATIENT_CALLED, {
     appointmentId,
     tokenNumber,
+    status: QUEUE_ENTRY_STATUS.CALLED,
+    estimateStatus: 'called',
+    estimatedConsultationStartTime: null,
+    estimatedConsultationEndTime: null,
     message: `It's your turn — Token #${tokenNumber}. Please proceed to the doctor's room.`,
     timestamp: new Date(),
   });
@@ -61,16 +65,11 @@ const broadcastQueueUpdate = ({ doctorId, date, queue }) => {
 };
 
 /**
- * Pushes each still-waiting patient their OWN estimated consultation time slot.
- * This is displayed as a simple time range (e.g. "12:30 PM – 12:45 PM") with
- * no delay/early messaging or countdown timer.
+ * Pushes each patient their current queue estimate and status so waiting
+ * patients receive time ranges and called/finished patients clear old estimates.
  *
- * Notifications are sent only when:
- * - Queue composition changes (a completion, skip, or cancellation)
- * - This patient's estimated time has changed from the last broadcast
- *
- * NOT sent on every second tick or continuously — a one-time notification
- * when the estimate changes is all the patient receives.
+ * Notifications are sent when a queue transition recalculates queue state;
+ * time-based refreshes are handled by the appointment tracking endpoint.
  *
  * The frontend also deduplicates: it checks if the new times match the current
  * state before re-rendering, so even if we emit twice with the same values,
@@ -78,27 +77,52 @@ const broadcastQueueUpdate = ({ doctorId, date, queue }) => {
  */
 const notifyEstimatedConsultationTimes = (queue) => {
   const io = getIO();
-  const etaStatuses = new Set([
-    QUEUE_ENTRY_STATUS.WAITING,
-    QUEUE_ENTRY_STATUS.PENDING,
-    QUEUE_ENTRY_STATUS.CALLED,
+  const currentlyServingEntry =
+    queue.entries.find((entry) => entry.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION) ||
+    queue.entries.find((entry) => entry.status === QUEUE_ENTRY_STATUS.CALLED);
+  const terminalStatuses = new Set([
+    QUEUE_ENTRY_STATUS.COMPLETED,
+    QUEUE_ENTRY_STATUS.SKIPPED,
+    QUEUE_ENTRY_STATUS.NO_SHOW,
   ]);
 
-  queue.entries
-    .filter(
-      (e) => etaStatuses.has(e.status) && e.estimatedConsultationStartTime != null
-    )
-    .forEach((entry) => {
-      io.to(patientRoom(entry.patient)).emit(SOCKET_EVENTS.PATIENT_ETA_UPDATED, {
-        appointmentId: entry.appointment,
-        // Patient-facing display: simple time range from the authoritative scheduler
-        estimatedConsultationStartTime: entry.estimatedConsultationStartTime,
-        estimatedConsultationEndTime: entry.estimatedConsultationEndTime,
-        queuePosition: entry.queuePosition,
-        status: entry.status,
-        timestamp: new Date(),
-      });
+  queue.entries.forEach((entry) => {
+    const isTerminal = terminalStatuses.has(entry.status);
+    const isCalled = entry.status === QUEUE_ENTRY_STATUS.CALLED;
+    const isConsulting = entry.status === QUEUE_ENTRY_STATUS.IN_CONSULTATION;
+    const isWaiting = [QUEUE_ENTRY_STATUS.WAITING, QUEUE_ENTRY_STATUS.PENDING].includes(entry.status);
+    const canEstimate = isWaiting && queue.status === 'active' && entry.estimatedConsultationStartTime;
+
+    io.to(patientRoom(entry.patient)).emit(SOCKET_EVENTS.PATIENT_ETA_UPDATED, {
+      appointmentId: entry.appointment,
+      estimatedConsultationStartTime: canEstimate ? entry.estimatedConsultationStartTime : null,
+      estimatedConsultationEndTime: canEstimate ? entry.estimatedConsultationEndTime : null,
+      queuePosition: isTerminal ? null : entry.queuePosition,
+      queueEntriesAhead: isTerminal || entry.queuePosition == null
+        ? null
+        : Math.max(entry.queuePosition - 1, 0),
+      currentServingTokenNumber: currentlyServingEntry?.tokenNumber ?? null,
+      currentServingStatus: currentlyServingEntry?.status ?? null,
+      currentTokenNumber: queue.currentTokenNumber,
+      averageConsultationMinutes: queue.averageConsultationMinutes,
+      queueStatus: queue.status,
+      status: entry.status,
+      estimateStatus: isCalled
+        ? 'called'
+        : isConsulting
+          ? 'in-consultation'
+          : isTerminal
+            ? entry.status
+            : queue.status === 'paused'
+              ? 'queue-paused'
+              : queue.status === 'closed'
+                ? 'queue-closed'
+                : entry.queuePosition === 1 && !currentlyServingEntry
+                  ? 'next'
+                  : 'waiting',
+      timestamp: new Date(),
     });
+  });
 };
 
 

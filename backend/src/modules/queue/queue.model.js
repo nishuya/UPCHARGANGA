@@ -57,7 +57,8 @@ const queueEntrySchema = new Schema(
     // The calculated consultation time slot based on queue position.
     // Displayed to patient as "12:30 PM – 12:45 PM" with no delay/early messaging.
     // Persisted so Socket.IO broadcasts can push the exact same value to patient's screen.
-    // Updated only when queue position changes (not continuously recalculated).
+    // Cached queue projection for queue-board consumers. Patient tracking
+    // always recalculates from current queue state before returning an estimate.
     estimatedConsultationStartTime: {
       type: Date,
       default: null,
