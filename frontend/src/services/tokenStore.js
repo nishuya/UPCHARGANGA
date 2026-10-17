@@ -21,36 +21,6 @@ const LEGACY_STORAGE_KEYS = [
   'upcharganga_user',
 ];
 
-export const EXPLICIT_LOGOUT_KEY = 'upcharganga_explicit_logout';
-
-export const hasExplicitLogout = () => {
-  if (typeof window === 'undefined') return false;
-  try {
-    return window.localStorage.getItem(EXPLICIT_LOGOUT_KEY) === '1';
-  } catch {
-    return false;
-  }
-};
-
-export const markExplicitLogout = () => {
-  if (typeof window === 'undefined') return false;
-  try {
-    window.localStorage.setItem(EXPLICIT_LOGOUT_KEY, '1');
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-export const clearExplicitLogout = () => {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(EXPLICIT_LOGOUT_KEY);
-  } catch {
-    // Authentication still works when persistent storage is unavailable.
-  }
-};
-
 export const clearLegacyAuthStorage = () => {
   if (typeof window === 'undefined') return;
   for (const key of LEGACY_STORAGE_KEYS) {

@@ -42,7 +42,7 @@ apiClient.interceptors.request.use((config) => {
  */
 let refreshPromise = null;
 
-export const refreshSession = () => {
+const refreshSessionOnce = () => {
   if (!refreshPromise) {
     const startEpoch = getSessionEpoch();
 
@@ -69,6 +69,14 @@ export const refreshSession = () => {
   }
 
   return refreshPromise;
+};
+
+export const refreshSession = () => {
+  if (typeof navigator === 'undefined' || !navigator.locks?.request) {
+    return refreshSessionOnce();
+  }
+
+  return navigator.locks.request('upcharganga-auth-refresh', refreshSessionOnce);
 };
 
 const performRefresh = async () => {

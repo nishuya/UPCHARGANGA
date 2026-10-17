@@ -1,11 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
-  EXPLICIT_LOGOUT_KEY,
   clearAccessToken,
-  clearExplicitLogout,
   getAccessToken,
-  hasExplicitLogout,
-  markExplicitLogout,
   setAccessToken,
 } from '../services/tokenStore';
 import { queryClient } from '../services/queryClient';
@@ -27,7 +23,6 @@ export const AuthProvider = ({ children }) => {
     if (!data?.accessToken || !data?.user) {
       return false;
     }
-    clearExplicitLogout();
     setAccessToken(data.accessToken);
     setUser(data.user);
     connectSocket();
@@ -57,9 +52,6 @@ export const AuthProvider = ({ children }) => {
     // can identify the user even if only the Authorization header or only the
     // refreshToken cookie is available.
     const tokenBeforeLogout = getAccessToken();
-    if (!markExplicitLogout()) {
-      console.warn('Could not persist the explicit logout marker in browser storage.');
-    }
 
     // Immediately clear local auth state, in-memory token, socket, and query cache
     // so protected routes stop rendering authenticated content immediately.
@@ -111,12 +103,7 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     let cancelled = false;
 
-    if (hasExplicitLogout()) {
-      clearSession();
-      setIsLoading(false);
-    } else {
-      restoreSession(() => !cancelled);
-    }
+    restoreSession(() => !cancelled);
 
     return () => {
       cancelled = true;
@@ -129,18 +116,11 @@ export const AuthProvider = ({ children }) => {
       setInitializationError(null);
       setIsLoading(false);
     };
-    const handleStorageChange = (event) => {
-      if (event.key === EXPLICIT_LOGOUT_KEY && event.newValue === '1') {
-        handleForcedLogout();
-      }
-    };
     window.addEventListener('auth:logout', handleForcedLogout);
     window.addEventListener('socket:auth-failed', handleForcedLogout);
-    window.addEventListener('storage', handleStorageChange);
     return () => {
       window.removeEventListener('auth:logout', handleForcedLogout);
       window.removeEventListener('socket:auth-failed', handleForcedLogout);
-      window.removeEventListener('storage', handleStorageChange);
     };
   }, [clearSession]);
 

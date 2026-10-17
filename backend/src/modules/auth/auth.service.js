@@ -118,10 +118,9 @@ const loginUser = async ({ email, password }) => {
  * 2. Load the user and verify the account is active, password hasn't changed,
  *    and the server-side refresh session hasn't expired or been revoked.
  * 3. Compare the incoming token's SHA-256 hash against the stored hash.
- * 4. If they don't match, the stored token was already rotated or revoked —
- *    clear the stored hash and force a fresh login.
- * 5. If they match, issue a brand-new access+refresh pair and store the
- *    new hash (old refresh token becomes unusable immediately — rotation).
+ * 4. Reject invalid/reused tokens and clear the stored session.
+ * 5. Rotate with a conditional atomic update so concurrent refreshes cannot
+ *    overwrite each other's tokens or revoke the winning session.
  */
 const refreshAccessToken = async (incomingRefreshToken) => {
   if (!incomingRefreshToken || typeof incomingRefreshToken !== 'string') {
@@ -172,7 +171,30 @@ const refreshAccessToken = async (incomingRefreshToken) => {
     throw new ApiError(401, 'Session invalid. Please log in again.');
   }
 
-  const tokens = await issueTokens(user);
+  const tokens = {
+    accessToken: generateAccessToken(user),
+    refreshToken: generateRefreshToken(user),
+  };
+  const rotatedUser = await User.findOneAndUpdate(
+    {
+      _id: user._id,
+      refreshToken: hashToken(incomingRefreshToken),
+      isActive: true,
+    },
+    {
+      $set: {
+        refreshToken: hashToken(tokens.refreshToken),
+        refreshTokenExpiresAt: new Date(Date.now() + config.jwt.refreshExpiryMs),
+      },
+    },
+    { new: true }
+  );
+
+  if (!rotatedUser) {
+    // Another request rotated this token after the initial hash check.
+    throw new ApiError(409, 'Session refresh is already in progress. Please retry.');
+  }
+
   const safeUser = await User.findById(user._id)
     .select(PUBLIC_FIELDS)
     .populate('hospital', 'name')
