@@ -15,8 +15,14 @@
 const Appointment = require('./appointments.model');
 const Doctor = require('../doctors/doctors.model');
 const Patient = require('../patients/patients.model');
+const Queue = require('../queue/queue.model');
+const QueueScheduler = require('../queue/queue.scheduler.service');
 const ApiError = require('../../errors/ApiError');
-const { normalizeDateOnly, getHospitalNow } = require('../../utils/datetime.util');
+const {
+  normalizeDateOnly,
+  getHospitalNow,
+  isSameUTCDate,
+} = require('../../utils/datetime.util');
 const { APPOINTMENT_STATUS } = require('../../constants/enums');
 
 /**
@@ -179,15 +185,18 @@ const getQueueEntryForAppointment = async (appointmentId) => {
     throw new ApiError(404, 'Appointment not found');
   }
 
-  // Find the queue for this doctor/date
-  const Queue = require('../queue/queue.model');
-  const queue = await Queue.findOne({
-    doctor: appointment.doctor,
-    date: appointment.appointmentDate,
-  });
+  // Refresh same-day estimates against the current time before returning them.
+  const isAppointmentToday = isSameUTCDate(appointment.appointmentDate, getHospitalNow());
+  const queue = isAppointmentToday
+    ? await QueueScheduler.recalculateQueue(appointment.doctor, appointment.appointmentDate)
+    : await Queue.findOne({
+        doctor: appointment.doctor,
+        date: appointment.appointmentDate,
+      });
 
+  // Find the queue for this doctor/date
   if (!queue) {
-    // No queue yet for this doctor/date (appointment is future-dated)
+    // No queue exists for this doctor/date yet.
     return {
       appointmentId,
       tokenNumber: appointment.tokenNumber,

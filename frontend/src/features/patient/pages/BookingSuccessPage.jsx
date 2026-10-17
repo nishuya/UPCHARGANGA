@@ -4,6 +4,7 @@ import { Spinner, ErrorNotice } from '../components/ui/PStateNotice';
 import { useAppointment } from '../hooks/useAppointments';
 import { ROUTES } from '../../../constants/routePaths';
 import UpcharGangaLogo from '../../../assets/logo/UpcharGangaLogo';
+import { formatHospitalTime } from '../../../utils/dateTime';
 
 const formatDate = (value) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -11,21 +12,6 @@ const formatDate = (value) =>
     month: 'short',
     year: 'numeric',
   });
-
-const formatTime = (value) => {
-  if (!value) return '—';
-  // Booked slots are "HH:mm" strings; live estimates are ISO datetimes.
-  if (typeof value === 'string' && /^\d{2}:\d{2}/.test(value)) {
-    return value.substring(0, 5);
-  }
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
-};
 
 const formatDateTime = (value) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -216,8 +202,8 @@ const BookingSuccessPage = () => {
               <div>
                 <p className="text-caption font-medium text-neutral-500">Booked time slot</p>
                 <p className="mt-1 text-body font-semibold text-neutral-900">
-                  {formatTime(appointment?.timeSlot?.start)} –{' '}
-                  {formatTime(appointment?.timeSlot?.end)}
+                  {formatHospitalTime(appointment?.timeSlot?.start)} –{' '}
+                  {formatHospitalTime(appointment?.timeSlot?.end)}
                 </p>
               </div>
 
@@ -227,7 +213,7 @@ const BookingSuccessPage = () => {
                     Estimated consultation
                   </p>
                   <p className="mt-1 text-body font-semibold text-neutral-900">
-                    {formatTime(estimatedStart)} – {formatTime(estimatedEnd)}
+                    {formatHospitalTime(estimatedStart)} – {formatHospitalTime(estimatedEnd)}
                   </p>
                 </div>
               )}

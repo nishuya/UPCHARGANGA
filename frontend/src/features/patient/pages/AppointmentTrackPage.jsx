@@ -7,6 +7,7 @@ import { Spinner, ErrorNotice } from '../components/ui/PStateNotice';
 import { useAppointment, useCancelAppointment } from '../hooks/useAppointments';
 import useAppointmentTracking from '../hooks/useAppointmentTracking';
 import { ROUTES } from '../../../constants/routePaths';
+import { formatHospitalTime } from '../../../utils/dateTime';
 
 const CANCELLABLE_STATUSES = ['pending', 'confirmed', 'checked-in'];
 
@@ -15,13 +16,6 @@ const formatDate = (value) =>
     day: '2-digit',
     month: 'short',
     year: 'numeric',
-  });
-
-const formatTime = (value) =>
-  new Date(value).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
   });
 
 /**
@@ -111,8 +105,8 @@ const AppointmentTrackPage = () => {
           <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
             <p className="text-caption text-neutral-600">Estimated consultation time</p>
             <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
-              {formatTime(live.estimatedConsultationStartTime)} –{' '}
-              {formatTime(live.estimatedConsultationEndTime)}
+              {formatHospitalTime(live.estimatedConsultationStartTime)} –{' '}
+              {formatHospitalTime(live.estimatedConsultationEndTime)}
             </p>
           </div>
         ) : appointment.timeSlot ? (
@@ -170,12 +164,12 @@ const AppointmentTrackPage = () => {
             <div className="border-t border-neutral-100 pt-4 flex flex-col xs:flex-row xs:justify-between xs:items-start gap-1">
               <dt className="text-body-sm text-neutral-600">Estimated consultation</dt>
               <dd className="text-body font-semibold text-neutral-900">
-                {formatTime(
+                {formatHospitalTime(
                   live?.estimatedConsultationStartTime ||
                     appointment.estimatedConsultationStartTime
                 )}
                 {' – '}
-                {formatTime(
+                {formatHospitalTime(
                   live?.estimatedConsultationEndTime ||
                     appointment.estimatedConsultationEndTime
                 )}

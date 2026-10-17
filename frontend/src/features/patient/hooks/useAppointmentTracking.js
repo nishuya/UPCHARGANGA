@@ -16,10 +16,9 @@ import { SOCKET_EVENTS } from '../../../constants/socketEvents';
  * over the REST snapshot rather than replacing it, since the socket
  * payloads are deliberately small deltas, not the full appointment.
  *
- * IMPORTANT: No countdown timers or "wait time" display. The patient sees
- * only their estimated consultation time slot (e.g. "12:30 PM – 12:45 PM")
- * and queue position. Updates are sent only when the queue changes, not
- * continuously.
+ * The patient sees their estimated consultation time slot and queue position.
+ * Same-day estimates are refreshed periodically against the current hospital
+ * time; no client-side countdown is displayed.
  */
 
 /**
@@ -27,7 +26,7 @@ import { SOCKET_EVENTS } from '../../../constants/socketEvents';
  */
 const fetchAppointmentQueueEntry = async (appointmentId) => {
   const response = await apiClient.get(`/appointments/${appointmentId}/queue-entry`);
-  return response.data.data;
+  return response.data.data.queueEntry;
 };
 
 const useAppointmentTracking = (appointmentId) => {
@@ -92,4 +91,3 @@ const useAppointmentTracking = (appointmentId) => {
 };
 
 export default useAppointmentTracking;
-
