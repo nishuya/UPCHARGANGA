@@ -25,7 +25,7 @@ import { SOCKET_EVENTS } from '../../../constants/socketEvents';
  * Fetch appointment's queue entry to get real-time estimated times
  */
 const fetchAppointmentQueueEntry = async (appointmentId) => {
-  const response = await apiClient.get(`/appointments/${appointmentId}/queue-entry`);
+  const response = await apiClient.get(`/patients/appointments/${appointmentId}/queue-entry`);
   return response.data.data.queueEntry;
 };
 
@@ -39,7 +39,7 @@ const useAppointmentTracking = (appointmentId) => {
   }, []);
 
   // Polling keeps time-based estimates current even when no queue event fires.
-  const { data: queueEntry } = useQuery({
+  const { data: queueEntry, isPending, isError } = useQuery({
     queryKey: ['appointmentQueueEntry', appointmentId],
     queryFn: () => fetchAppointmentQueueEntry(appointmentId),
     enabled: !!appointmentId,
@@ -113,7 +113,12 @@ const useAppointmentTracking = (appointmentId) => {
     };
   }, [appointmentId]);
 
-  return live ? { ...live, currentTime } : null;
+  return {
+    ...live,
+    currentTime,
+    isTrackingLoading: isPending,
+    isTrackingError: isError,
+  };
 };
 
 export default useAppointmentTracking;

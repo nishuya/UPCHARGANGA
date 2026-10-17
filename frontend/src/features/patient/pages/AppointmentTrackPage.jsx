@@ -73,8 +73,12 @@ const AppointmentTrackPage = () => {
     live?.estimatedConsultationEndTime != null &&
     !estimateHasPassed;
   const estimateMessage =
-    ESTIMATE_STATUS_MESSAGES[live?.estimateStatus] ||
-    (estimateHasPassed ? 'Updating estimate…' : null);
+    (live.isTrackingError
+      ? 'Unable to load estimate. Retrying…'
+      : live.isTrackingLoading
+        ? 'Updating estimate…'
+        : ESTIMATE_STATUS_MESSAGES[live.estimateStatus]) ||
+    (estimateHasPassed ? 'Updating estimate…' : 'Estimate unavailable');
 
   const handleCancel = async () => {
     try {
@@ -140,13 +144,6 @@ const AppointmentTrackPage = () => {
             <p className="text-caption text-neutral-600">Estimated consultation</p>
             <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
               {estimateMessage}
-            </p>
-          </div>
-        ) : appointment.timeSlot ? (
-          <div className="border-t border-upchar-200 pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-xl">
-            <p className="text-caption text-neutral-600">Booked time slot</p>
-            <p className="text-base sm:text-lg font-bold text-upchar-600 mt-1">
-              {appointment.timeSlot.start} – {appointment.timeSlot.end}
             </p>
           </div>
         ) : null}
