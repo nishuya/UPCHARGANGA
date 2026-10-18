@@ -18,6 +18,7 @@ import {
 } from '../utils/dateTime';
 
 const CANCELLABLE_STATUSES = ['pending', 'confirmed', 'checked-in'];
+const normalizeStatus = (status) => String(status || '').trim().toLowerCase().replace(/_/g, '-');
 
 const formatDate = (value) => {
   if (!value) return 'N/A';
@@ -152,6 +153,12 @@ export default function AppointmentDetailScreen({ route, navigation }) {
     );
   }
 
+  const appointmentStatus = normalizeStatus(appointment.status);
+  const queueEstimateStatus = normalizeStatus(queueEntry?.estimateStatus);
+  const displayStatus = ['cancelled', 'expired'].includes(appointmentStatus)
+    ? appointmentStatus
+    : queueEstimateStatus || appointmentStatus;
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.header}>Appointment details</Text>
@@ -182,15 +189,15 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         <Text
           style={[
             styles.value,
-            appointment.status === 'cancelled' && styles.cancelledStatus,
-            appointment.status === 'expired' && styles.expiredStatus,
+            displayStatus === 'cancelled' && styles.cancelledStatus,
+            displayStatus === 'expired' && styles.expiredStatus,
           ]}
         >
-          {appointment.status === 'cancelled'
+          {displayStatus === 'cancelled'
             ? 'Cancelled'
-            : appointment.status === 'expired'
+            : displayStatus === 'expired'
               ? 'Expired'
-              : queueEntry?.estimateStatus || appointment.status}
+              : displayStatus.replace(/-/g, ' ')}
         </Text>
 
         <Text style={styles.label}>Estimated consultation time</Text>

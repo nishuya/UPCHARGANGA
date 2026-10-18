@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { patientApi } from '../services/patientApi';
 import { colors } from '../theme';
@@ -25,6 +26,8 @@ const formatDate = (value) => {
 const formatStatus = (status) =>
   status ? status.replace(/-/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()) : 'Unknown';
 
+const normalizeStatus = (status) => String(status || '').trim().toLowerCase().replace(/_/g, '-');
+
 export default function AppointmentsScreen({ navigation }) {
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -41,9 +44,11 @@ export default function AppointmentsScreen({ navigation }) {
     }
   }, []);
 
-  useEffect(() => {
-    loadAppointments();
-  }, [loadAppointments]);
+  useFocusEffect(
+    useCallback(() => {
+      loadAppointments();
+    }, [loadAppointments])
+  );
 
   if (loading) {
     return (
@@ -97,11 +102,11 @@ export default function AppointmentsScreen({ navigation }) {
               <Text
                 style={[
                   styles.status,
-                  item.status === 'cancelled' && styles.cancelledStatus,
-                  item.status === 'expired' && styles.expiredStatus,
+                  normalizeStatus(item.status) === 'cancelled' && styles.cancelledStatus,
+                  normalizeStatus(item.status) === 'expired' && styles.expiredStatus,
                 ]}
               >
-                {formatStatus(item.status)}
+                {formatStatus(normalizeStatus(item.status))}
               </Text>
             </View>
           </TouchableOpacity>

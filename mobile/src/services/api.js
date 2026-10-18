@@ -10,6 +10,38 @@ const api = axios.create({
   headers: { 'X-Client-Platform': 'mobile' },
 });
 
+const AUTH_ENDPOINT_PATTERN = /\/auth\/(login|register)(?:\?|$)/;
+
+const sanitizeDiagnosticMessage = (message) =>
+  String(message || '')
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[email]')
+    .replace(/\+?\d[\d\s()-]{8,}\d/g, '[phone]')
+    .replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[token]')
+    .replace(/\b(password|token)\s*[:=]\s*[^,\s;]+/gi, '$1=[redacted]')
+    .replace(/[\r\n\t]/g, ' ')
+    .slice(0, 200);
+
+const logAuthenticationFailure = (error) => {
+  const config = error?.config;
+  if (!AUTH_ENDPOINT_PATTERN.test(config?.url || '')) return;
+
+  const baseUrl = String(config.baseURL || API_BASE_URL).replace(/\/+$/, '');
+  const path = String(config.url || '').replace(/^\/+/, '').split('?')[0];
+  const status = error.response?.status ?? null;
+  const serverMessage =
+    status >= 500
+      ? 'Server error'
+      : sanitizeDiagnosticMessage(error.response?.data?.message);
+
+  console.warn('[mobile-auth] request failed', {
+    method: String(config.method || 'get').toUpperCase(),
+    url: `${baseUrl}/${path}`,
+    status,
+    code: error.code || null,
+    serverMessage: serverMessage || null,
+  });
+};
+
 const TOKEN_KEYS = {
   access: 'upcharganga_access_token',
   refresh: 'upcharganga_refresh_token',
@@ -77,8 +109,15 @@ api.interceptors.response.use(
   },
   async (error) => {
     const originalRequest = error.config;
+    logAuthenticationFailure(error);
+    const isAuthenticationEndpoint = AUTH_ENDPOINT_PATTERN.test(originalRequest?.url || '');
 
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !isAuthenticationEndpoint &&
+      !originalRequest._retry
+    ) {
       originalRequest._retry = true;
 
       const refreshToken = await getStoredRefreshToken();

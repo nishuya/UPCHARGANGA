@@ -1,27 +1,31 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "UpcharGanga",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+   "icon": "./assets/android-icon-foreground-padded.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
     },
-    "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
-    },
+ "android": {
+  "adaptiveIcon": {
+   "foregroundImage": "./assets/android-icon-foreground-padded.png",
+    "backgroundColor": "#259B8A"
+  },
+  "package": "com.nishuyadav1817.mobile"
+},
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "cc2d3511-cc83-4a78-b8af-55662bfbaf8a"
+      }
+    }
   }
 }

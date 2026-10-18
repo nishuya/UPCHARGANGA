@@ -15,6 +15,45 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { colors, logoUri } from '../theme';
 
+const getAuthenticationErrorMessage = (error) => {
+  const status = error?.response?.status;
+  const responseData = error?.response?.data;
+
+  if (status === 400 && Array.isArray(responseData?.errors) && responseData.errors.length > 0) {
+    return responseData.errors
+      .filter((message) => typeof message === 'string')
+      .join('\n');
+  }
+
+  if (status === 400 && responseData?.message === 'Validation failed') {
+    return 'Please check the information you entered and try again.';
+  }
+
+  if (status === 401) return 'Email or password is incorrect.';
+  if (status === 403) return 'This account cannot log in. Please contact support if you need help.';
+  if (status === 409) {
+    return responseData?.message || 'An account with these details already exists.';
+  }
+  if (status === 423) {
+    return 'Your account is temporarily locked. Please wait before trying again.';
+  }
+  if (status === 429) return 'Too many attempts. Please wait and try again.';
+  if (status === 404) {
+    return 'The authentication service could not be found. Please update the app or contact support.';
+  }
+  if (status >= 500) {
+    return 'The authentication service is temporarily unavailable. Please try again later.';
+  }
+  if (status) return 'Unable to authenticate with the information provided. Please try again.';
+  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+    return 'The request timed out. Check your connection and try again.';
+  }
+  if (error?.request) {
+    return 'Unable to connect to UpcharGanga. Check your internet connection and try again.';
+  }
+  return 'Unable to complete the request. Please try again.';
+};
+
 export default function AuthScreen() {
   const [isLogin, setIsLogin] = useState(true);
   const [fullName, setFullName] = useState('');
@@ -45,8 +84,7 @@ export default function AuthScreen() {
         });
       }
     } catch (error) {
-      const message = error?.response?.data?.message || 'Something went wrong. Please try again.';
-      Alert.alert('Authentication failed', message);
+      Alert.alert(isLogin ? 'Login failed' : 'Registration failed', getAuthenticationErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
