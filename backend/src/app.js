@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const sanitize = require('./middlewares/sanitize.middleware');
+const identifyClientPlatform = require('./middlewares/clientPlatform.middleware');
 const compression = require('compression');
 const morgan = require('morgan');
 
@@ -25,6 +26,9 @@ app.set('trust proxy', 1);
 
 // Sets a range of protective HTTP headers (X-Frame-Options, HSTS, etc).
 app.use(helmet());
+
+// Attribution only: this client-provided header is not trusted for auth or access control.
+app.use(identifyClientPlatform);
 
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
@@ -65,7 +69,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Platform'],
     maxAge: 86400, // 24 hours
   })
 );
@@ -83,7 +87,8 @@ app.use(sanitize);
 app.use(compression());
 
 if (config.env !== 'test') {
-  app.use(morgan(config.env === 'development' ? 'dev' : 'combined'));
+  morgan.token('client-platform', (req) => req.clientPlatform || 'unknown');
+  app.use(morgan(`${config.env === 'development' ? 'dev' : 'combined'} :client-platform`));
 }
 
 app.get('/', (req, res) => {

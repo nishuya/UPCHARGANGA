@@ -26,7 +26,8 @@ const APPOINTMENT_POPULATE = [
   },
   {
     path: 'hospital',
-    select: 'name address contact' // Select entire nested objects, not specific fields
+    select: 'name address contact city',
+    populate: { path: 'city', select: 'name state country' },
   },
   { path: 'department', select: 'name' },
 ];

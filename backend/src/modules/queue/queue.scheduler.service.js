@@ -40,6 +40,30 @@ class QueueScheduler {
    * Recalculate the entire queue. API reads may request an in-memory projection
    * so live estimates are never sourced from a stale persisted snapshot.
    */
+  static _resolveEffectiveConsultationMinutes(queue, daySchedule) {
+    const configuredConsultationMinutes = resolveConsultationDuration(daySchedule);
+    const hasActualConsultationHistory = Array.isArray(queue?.entries)
+      ? queue.entries.some(
+          (entry) =>
+            entry.status === QUEUE_ENTRY_STATUS.COMPLETED ||
+            Number.isFinite(entry.actualDurationMinutes) ||
+            entry.actualEndDateTime ||
+            entry.completedAt
+        )
+      : false;
+    const persistedAverage = Number(queue?.averageConsultationMinutes);
+
+    if (hasActualConsultationHistory && Number.isFinite(persistedAverage) && persistedAverage > 0) {
+      return persistedAverage;
+    }
+
+    if (!Number.isFinite(persistedAverage) || persistedAverage <= 0 || queue?.averageConsultationMinutes === null) {
+      return configuredConsultationMinutes;
+    }
+
+    return configuredConsultationMinutes;
+  }
+
   static async recalculateQueue(doctorId, appointmentDate, session, { persist = true } = {}) {
     console.log('[SCHEDULER] 🔄 Recalculating queue for doctor:', doctorId, 'date:', appointmentDate);
 
@@ -67,11 +91,15 @@ class QueueScheduler {
         throw new ApiError(400, 'Doctor not available on this date');
       }
 
-      const configuredConsultationMinutes = resolveConsultationDuration(daySchedule);
-      const consultationMinutes =
-        Number.isFinite(queue.averageConsultationMinutes) && queue.averageConsultationMinutes > 0
-          ? queue.averageConsultationMinutes
-          : configuredConsultationMinutes;
+      const consultationMinutes = this._resolveEffectiveConsultationMinutes(queue, daySchedule);
+      if (
+        !Number.isFinite(Number(queue.averageConsultationMinutes)) ||
+        Number(queue.averageConsultationMinutes) <= 0 ||
+        Number(queue.averageConsultationMinutes) !== consultationMinutes
+      ) {
+        queue.averageConsultationMinutes = consultationMinutes;
+      }
+
       console.log('[SCHEDULER] ⏱️  Consultation duration:', consultationMinutes, 'minutes');
 
       if (persist) {

@@ -20,7 +20,8 @@ const APPOINTMENT_POPULATE = [
   },
   {
     path: 'hospital',
-    select: 'name address contact' // Get full address and contact objects
+    select: 'name address contact city',
+    populate: { path: 'city', select: 'name state country' },
   },
   { path: 'department', select: 'name' },
 ];

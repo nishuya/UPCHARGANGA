@@ -56,7 +56,7 @@ const getQueue = async (req, res) => {
         totalTokensIssued: 0,
         entries: [],
         status: 'active',
-        averageConsultationMinutes: 15,
+        averageConsultationMinutes: null,
       });
     }
 

@@ -41,7 +41,9 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
 
   const isTerminal = TERMINAL_STATUSES.includes(appointment.status);
   const canMarkArrived = ['pending', 'confirmed'].includes(appointment.status);
-  const canMarkPending = ['pending', 'confirmed'].includes(appointment.status);
+  const canMarkPending =
+    ['pending', 'confirmed', 'checked-in'].includes(appointment.status) &&
+    !appointment.isInDoctorQueue;
   const canMoveToQueue =
     appointment.status === 'checked-in' && appointment.payment && !appointment.isInDoctorQueue;
   const canManage = !isTerminal;
@@ -223,6 +225,11 @@ const ReceptionAppointmentCard = ({ appointment, hospitalName }) => {
             Cancel
           </Button>
         </div>
+      )}
+      {pendingMutation.isError && (
+        <p className="mt-2 text-body-sm font-medium text-danger-700">
+          {getApiErrorMessage(pendingMutation.error, 'Could not mark patient as pending.')}
+        </p>
       )}
 
       {/* Verification Panel */}

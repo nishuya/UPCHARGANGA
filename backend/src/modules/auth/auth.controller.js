@@ -31,16 +31,21 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const refreshToken = asyncHandler(async (req, res) => {
-  const incoming = req.cookies?.refreshToken;
+  const incoming = req.cookies?.refreshToken || req.body?.refreshToken;
 
   try {
     const { user, accessToken, refreshToken: newRefreshToken } =
       await authService.refreshAccessToken(incoming);
 
+    const responseData = { user, accessToken };
+    if (!req.cookies?.refreshToken && req.body?.refreshToken) {
+      responseData.refreshToken = newRefreshToken;
+    }
+
     res
       .status(200)
       .cookie('refreshToken', newRefreshToken, getRefreshTokenCookieOptions())
-      .json(new ApiResponse(200, { user, accessToken }, 'Token refreshed.'));
+      .json(new ApiResponse(200, responseData, 'Token refreshed.'));
   } catch (error) {
     // Only invalid sessions should lose their persistent credential. Keep it
     // when refresh fails because of a temporary server or infrastructure error.
@@ -53,7 +58,7 @@ const refreshToken = asyncHandler(async (req, res) => {
 
 const logout = asyncHandler(async (req, res) => {
   const userId = req.user?._id;
-  const incomingRefreshToken = req.cookies?.refreshToken;
+  const incomingRefreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
   await authService.logoutUser({
     userId,

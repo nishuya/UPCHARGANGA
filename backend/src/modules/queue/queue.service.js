@@ -295,6 +295,19 @@ class QueueService {
   ) {
     console.log('[QUEUE] Adding entry - token:', tokenNumber, 'timeSlot:', timeSlot);
 
+    const seedAverageConsultationMinutes = Number.isFinite(Number(averageConsultationMinutes))
+      ? Number(averageConsultationMinutes)
+      : null;
+
+    const existingQueue = await Queue.findOne({ doctor: doctorId, date }, { averageConsultationMinutes: 1, entries: 1 }).session(session);
+    if (existingQueue &&
+      (!Number.isFinite(existingQueue.averageConsultationMinutes) || existingQueue.averageConsultationMinutes <= 0 ||
+       (!existingQueue.entries.some((entry) => entry.status === QUEUE_ENTRY_STATUS.COMPLETED || Number.isFinite(entry.actualDurationMinutes)) &&
+        existingQueue.averageConsultationMinutes !== seedAverageConsultationMinutes))) {
+      existingQueue.averageConsultationMinutes = seedAverageConsultationMinutes ?? existingQueue.averageConsultationMinutes;
+      await existingQueue.save({ session });
+    }
+
     // Create new queue entry with scheduled times
     const newEntry = {
       appointment: appointmentId,

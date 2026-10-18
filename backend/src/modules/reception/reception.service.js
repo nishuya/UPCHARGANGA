@@ -176,6 +176,10 @@ const markPending = async (appointmentId) => {
     );
   }
 
+  if (appointment.isInDoctorQueue) {
+    throw new ApiError(400, 'Cannot mark pending after the patient has entered the doctor queue.');
+  }
+
   return withTransaction(async (session) => {
     // Find and update the queue entry
     const queue = await Queue.findOne({
@@ -192,9 +196,17 @@ const markPending = async (appointmentId) => {
       throw new ApiError(404, 'Queue entry not found for this appointment.');
     }
 
-    // Mark entry as PENDING
+    appointment.status = APPOINTMENT_STATUS.PENDING;
+    appointment.arrivedAt = null;
+    appointment.isInDoctorQueue = false;
+    await appointment.save({ session });
+
     entry.status = QUEUE_ENTRY_STATUS.PENDING;
     entry.pendingMarkedAt = new Date();
+    entry.arrivalStatus = 'not-arrived';
+    entry.checkedInAt = null;
+    entry.attendanceTimeoutApplied = false;
+    entry.attendanceTimeoutAppliedAt = null;
     await queue.save({ session });
 
     console.log('✅ [RECEPTION] Patient marked as pending, queue entry updated');

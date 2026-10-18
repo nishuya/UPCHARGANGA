@@ -3,6 +3,8 @@ const User = require('../auth/auth.model');
 const Doctor = require('./doctors.model');
 const Hospital = require('../hospitals/hospitals.model');
 const Department = require('../departments/departments.model');
+const Queue = require('../queue/queue.model');
+const QueueScheduler = require('../queue/queue.scheduler.service');
 const ApiError = require('../../errors/ApiError');
 const ApiFeatures = require('../../utils/apiFeatures.util');
 const withTransaction = require('../../utils/withTransaction.util');
@@ -231,6 +233,13 @@ const updateDoctor = async (id, payload, file) => {
     new: true,
     runValidators: true,
   }).populate(DOCTOR_POPULATE);
+
+  if (payload.availability) {
+    const queues = await Queue.find({ doctor: id });
+    await Promise.all(
+      queues.map((queue) => QueueScheduler.recalculateQueue(id, queue.date))
+    );
+  }
 
   return updatedDoctor;
 };

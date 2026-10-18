@@ -225,7 +225,7 @@ const queueSchema = new Schema(
     // powers "estimated wait time" shown to patients still waiting.
     averageConsultationMinutes: {
       type: Number,
-      default: 15,
+      default: null,
     },
 
     // Atomically advanced end-of-slot cursor (minutes from midnight) used

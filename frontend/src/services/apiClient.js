@@ -12,6 +12,7 @@ export const apiClient = axios.create({
   baseURL,
   withCredentials: true, // sends the httpOnly refresh-token cookie
   timeout: 15000,
+  headers: { 'X-Client-Platform': 'web' },
 });
 
 // A separate, interceptor-free instance for the refresh call itself.
@@ -21,9 +22,12 @@ const refreshClient = axios.create({
   baseURL,
   withCredentials: true,
   timeout: 15000,
+  headers: { 'X-Client-Platform': 'web' },
 });
 
 apiClient.interceptors.request.use((config) => {
+  config.headers = config.headers || {};
+  config.headers['X-Client-Platform'] = 'web';
   const token = getAccessToken();
   if (token && !config.headers?.Authorization) {
     config.headers.Authorization = `Bearer ${token}`;
