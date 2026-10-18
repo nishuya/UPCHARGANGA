@@ -12,13 +12,13 @@
  */
 
 const request = require('supertest');
-const app = require('../app');
-const User = require('../modules/auth/auth.model');
-const Appointment = require('../modules/appointments/appointments.model');
-const Queue = require('../modules/queue/queue.model');
-const Hospital = require('../modules/hospitals/hospitals.model');
-const Doctor = require('../modules/doctors/doctors.model');
-const Department = require('../modules/departments/departments.model');
+const app = require('../src/app');
+const User = require('../src/modules/auth/auth.model');
+const Appointment = require('../src/modules/appointments/appointments.model');
+const Queue = require('../src/modules/queue/queue.model');
+const Hospital = require('../src/modules/hospitals/hospitals.model');
+const Doctor = require('../src/modules/doctors/doctors.model');
+const Department = require('../src/modules/departments/departments.model');
 
 // =====================================================================
 // TEST FIXTURES & HELPERS

@@ -1,9 +1,9 @@
 const request = require('supertest');
 const mongoose = require('mongoose');
-const User = require('../modules/auth/auth.model');
-const googleAuthService = require('../modules/auth/auth.google.service');
-const authService = require('../modules/auth/auth.service');
-const ApiError = require('../errors/ApiError');
+const User = require('../src/modules/auth/auth.model');
+const googleAuthService = require('../src/modules/auth/auth.google.service');
+const authService = require('../src/modules/auth/auth.service');
+const ApiError = require('../src/errors/ApiError');
 
 describe('🔐 Google Authentication Security Tests', () => {
   describe('Google Token Verification', () => {

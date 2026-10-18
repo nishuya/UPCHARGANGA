@@ -65,6 +65,15 @@ export default function AuthScreen() {
   const { signIn, signUp } = useAuth();
 
   const handleSubmit = async () => {
+    if (!isLogin && password.length < 6) {
+      Alert.alert('Invalid password', 'Password must be at least 6 characters long.');
+      return;
+    }
+    if (!isLogin && password.length > 12) {
+      Alert.alert('Invalid password', 'Password must be no more than 12 characters long.');
+      return;
+    }
+
     if (!email || !password || (!isLogin && (!fullName || !phone))) {
       Alert.alert('Missing details', 'Please complete the required fields before submitting.');
       return;
@@ -159,6 +168,9 @@ export default function AuthScreen() {
             placeholderTextColor={colors.textSubtle}
             secureTextEntry
           />
+          {!isLogin && (
+            <Text style={styles.passwordHint}>Use 6–12 characters. Any characters are allowed.</Text>
+          )}
 
           <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
             <Text style={styles.primaryButtonText}>
@@ -250,6 +262,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: colors.surface,
     color: colors.text,
+  },
+  passwordHint: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: -8,
+    marginBottom: 14,
   },
   primaryButton: {
     backgroundColor: colors.brand,

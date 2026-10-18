@@ -12,21 +12,19 @@ const objectId = () =>
     .message('must be a valid ID');
 
 /**
- * Reusable Joi fragment for password complexity — same rule everywhere a
- * password is set (self-registration, reset, and admin-set passwords for
- * Receptionist/Doctor Assistant accounts), so the requirement shown in
- * the UI ("At least 8 characters, with an uppercase letter, lowercase
- * letter, number, and symbol.") always matches what the backend enforces.
+ * Reusable Joi fragment for password length — same rule everywhere a
+ * password is set (registration, reset, and staff account creation).
  */
-const passwordComplexity = () =>
+const passwordLength = () =>
   Joi.string()
-    .min(8)
-    .max(64)
-    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).+$/)
+    .min(6)
+    .max(12)
     .required()
     .messages({
-      'string.pattern.base':
-        'Password must contain an uppercase letter, lowercase letter, number, and symbol.',
+      'string.empty': 'Password must be between 6 and 12 characters.',
+      'string.min': 'Password must be at least 6 characters long.',
+      'string.max': 'Password must be no more than 12 characters long.',
+      'any.required': 'Password is required.',
     });
 
-module.exports = { objectId, passwordComplexity };
+module.exports = { objectId, passwordLength };

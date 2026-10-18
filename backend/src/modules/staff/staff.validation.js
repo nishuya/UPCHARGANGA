@@ -1,5 +1,5 @@
 const Joi = require('joi');
-const { objectId, passwordComplexity } = require('../../validators/common.validation');
+const { objectId, passwordLength } = require('../../validators/common.validation');
 
 const phone = Joi.string()
   .trim()
@@ -15,7 +15,7 @@ const createReceptionistSchema = Joi.object({
   fullName: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().lowercase().email().required(),
   phone,
-  password: passwordComplexity(),
+  password: passwordLength(),
   gender: Joi.string().valid('male', 'female', 'other'),
   hospital: objectId().required(),
 });
@@ -27,7 +27,7 @@ const createDoctorAssistantSchema = Joi.object({
   fullName: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().lowercase().email().required(),
   phone,
-  password: passwordComplexity(),
+  password: passwordLength(),
   gender: Joi.string().valid('male', 'female', 'other'),
   hospital: objectId().required(),
   assignedDoctor: objectId().required(),

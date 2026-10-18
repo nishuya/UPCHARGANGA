@@ -41,6 +41,16 @@ const RegisterPage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    if (form.password.length < 6) {
+      setError('Password must be at least 6 characters long.');
+      return;
+    }
+    if (form.password.length > 12) {
+      setError('Password must be no more than 12 characters long.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const payload = { ...form };
@@ -139,11 +149,10 @@ const RegisterPage = () => {
                 placeholder="••••••••"
                 value={form.password}
                 onChange={handleChange}
-                required
                 className="w-full rounded-md border border-upchar-200 bg-neutral-0 px-md py-2.5 text-sm text-neutral-800 placeholder:text-neutral-400 transition-all duration-fast focus:border-upchar-500 focus:shadow-focus-ring focus:outline-none disabled:bg-upchar-50 disabled:text-neutral-400"
               />
               <p className="mt-sm text-caption text-neutral-600">
-                At least 8 characters with uppercase, lowercase, number, and symbol.
+                Use 6–12 characters. Any characters are allowed.
               </p>
             </div>
           </div>

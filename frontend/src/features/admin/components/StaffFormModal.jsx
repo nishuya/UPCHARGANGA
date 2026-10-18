@@ -25,6 +25,7 @@ const emptyForm = {
 
 const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
   const [form, setForm] = useState(emptyForm);
+  const [passwordError, setPasswordError] = useState('');
 
   const { data: hospitalsData } = useAdminHospitals({ limit: 100, isActive: 'true' });
   const { data: doctors } = useDoctorsLookup(form.hospital);
@@ -34,7 +35,10 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
     form.role === ROLES.RECEPTIONIST ? createReceptionistMutation : createDoctorAssistantMutation;
 
   useEffect(() => {
-    if (isOpen) setForm({ ...emptyForm, hospital: presetHospitalId || '' });
+    if (isOpen) {
+      setForm({ ...emptyForm, hospital: presetHospitalId || '' });
+      setPasswordError('');
+    }
   }, [isOpen, presetHospitalId]);
 
   const setField = (field) => (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }));
@@ -44,6 +48,16 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (form.password.length < 6) {
+      setPasswordError('Password must be at least 6 characters long.');
+      return;
+    }
+    if (form.password.length > 12) {
+      setPasswordError('Password must be no more than 12 characters long.');
+      return;
+    }
+    setPasswordError('');
 
     const basePayload = {
       fullName: form.fullName.trim(),
@@ -106,12 +120,15 @@ const StaffFormModal = ({ isOpen, onClose, presetHospitalId = '' }) => {
             label="Password"
             type="password"
             value={form.password}
-            onChange={setField('password')}
-            required
+            onChange={(e) => {
+              setPasswordError('');
+              setForm((prev) => ({ ...prev, password: e.target.value }));
+            }}
           />
+          {passwordError && <p className="mt-1 text-xs font-medium text-danger">{passwordError}</p>}
           <p className="mt-1 text-xs text-ink-subtle">
-            At least 8 characters, with an uppercase letter, lowercase letter, number, and symbol.
-            Share this with the new staff member — they'll log in with it directly.
+            Use 6–12 characters. Any characters are allowed. Share this with the new staff member —
+            they'll log in with it directly.
           </p>
         </div>
 

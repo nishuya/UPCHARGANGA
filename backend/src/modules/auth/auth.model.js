@@ -41,7 +41,7 @@ const userSchema = new Schema(
     password: {
       type: String,
       required: false, // Made optional for Google OAuth accounts (they use googleProviderId instead)
-      minlength: 8,
+      minlength: 6,
       select: false, // never returned in queries unless explicitly requested with +password
     },
 
