@@ -50,8 +50,11 @@ export default function BookingScreen({ route, navigation }) {
       const response = await patientApi.bookAppointment(payload);
       const result = response.data.data;
 
-      Alert.alert('Appointment booked', `Token #${result.queueNumber} confirmed.`);
-      navigation.navigate('PatientTabs', { screen: 'AppointmentsTab' });
+      navigation.navigate('AppointmentDetail', {
+        appointmentId: result.appointment._id,
+        appointment: result.appointment,
+        bookingConfirmed: true,
+      });
     } catch (error) {
       const message = error?.response?.data?.message || 'Booking failed. Please try again.';
       Alert.alert('Booking failed', message);

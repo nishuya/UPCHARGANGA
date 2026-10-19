@@ -1,17 +1,22 @@
 import React from 'react';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme';
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
+  const [loggingOut, setLoggingOut] = React.useState(false);
 
   const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
     try {
       await signOut();
     } catch (error) {
       Alert.alert('Logout failed', 'Please try again.');
+    } finally {
+      setLoggingOut(false);
     }
   };
 
@@ -51,8 +56,18 @@ export default function ProfileScreen() {
         </Text>
       </View>
 
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <Text style={styles.logoutText}>Log out</Text>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityState={{ disabled: loggingOut }}
+        disabled={loggingOut}
+        style={[styles.logoutButton, loggingOut && styles.logoutButtonDisabled]}
+        onPress={handleLogout}
+      >
+        {loggingOut ? (
+          <ActivityIndicator color={colors.textMuted} />
+        ) : (
+          <Text style={styles.logoutText}>Log out</Text>
+        )}
       </TouchableOpacity>
     </View>
   );
@@ -107,6 +122,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
+  },
+  logoutButtonDisabled: {
+    opacity: 0.6,
   },
   logoutText: {
     color: colors.textMuted,

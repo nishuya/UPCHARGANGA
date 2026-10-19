@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,6 +28,7 @@ export default function HomeScreen({ navigation }) {
   const [appointments, setAppointments] = useState([]);
   const [queueEntry, setQueueEntry] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
 
@@ -45,8 +47,14 @@ export default function HomeScreen({ navigation }) {
       setLoadError(true);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadHomeData();
+  }, [loadHomeData]);
 
   useEffect(() => {
     loadHomeData();
@@ -81,7 +89,19 @@ export default function HomeScreen({ navigation }) {
   }, [nextAppointment?._id]);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      alwaysBounceVertical
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          colors={[colors.brand]}
+          tintColor={colors.brand}
+        />
+      }
+    >
       <View style={styles.intro}>
         <Text style={styles.heading}>Hi {user?.fullName?.split(' ')[0] || 'Patient'},</Text>
         <Text style={styles.subheading}>Welcome to your UpcharGanga patient portal</Text>

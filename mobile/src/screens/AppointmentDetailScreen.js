@@ -2,16 +2,22 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Print from 'expo-print';
 
 import { patientApi } from '../services/patientApi';
 import { connectSocket } from '../services/socketService';
 import { colors } from '../theme';
+import {
+  createAppointmentReceiptHtml,
+  createAppointmentShareMessage,
+} from '../utils/appointmentReceipt';
 import {
   formatHospitalAddress,
   getEstimateText,
@@ -30,11 +36,12 @@ const formatDate = (value) => {
 };
 
 export default function AppointmentDetailScreen({ route, navigation }) {
-  const { appointmentId } = route.params;
-  const [appointment, setAppointment] = useState(null);
+  const { appointmentId, appointment: initialAppointment, bookingConfirmed } = route.params;
+  const [appointment, setAppointment] = useState(initialAppointment || null);
   const [queueEntry, setQueueEntry] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialAppointment);
   const [cancelling, setCancelling] = useState(false);
+  const [receiptAction, setReceiptAction] = useState(null);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
 
   const refreshQueueEntry = useCallback(async () => {
@@ -137,6 +144,35 @@ export default function AppointmentDetailScreen({ route, navigation }) {
     );
   };
 
+  const handlePrintReceipt = async () => {
+    if (!appointment || receiptAction) return;
+    setReceiptAction('print');
+    try {
+      await Print.printAsync({ html: createAppointmentReceiptHtml(appointment) });
+    } catch (error) {
+      console.log('Print appointment receipt error:', error?.message || error);
+      Alert.alert('Unable to print receipt', 'Please try again.');
+    } finally {
+      setReceiptAction(null);
+    }
+  };
+
+  const handleShareReceipt = async () => {
+    if (!appointment || receiptAction) return;
+    setReceiptAction('share');
+    try {
+      await Share.share({
+        title: 'My UpcharGanga Appointment Receipt',
+        message: createAppointmentShareMessage(appointment),
+      });
+    } catch (error) {
+      console.log('Share appointment receipt error:', error?.message || error);
+      Alert.alert('Unable to share receipt', 'Please try again.');
+    } finally {
+      setReceiptAction(null);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -161,7 +197,23 @@ export default function AppointmentDetailScreen({ route, navigation }) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.header}>Appointment details</Text>
+      {bookingConfirmed && (
+        <View style={styles.confirmationCard}>
+          <Text style={styles.confirmationTitle}>Appointment confirmed</Text>
+          <Text style={styles.confirmationText}>
+            Your booking is complete. Save or share this receipt for your visit.
+          </Text>
+        </View>
+      )}
+      <Text style={styles.header}>{bookingConfirmed ? 'Your booking token' : 'Appointment details'}</Text>
+
+      <View style={styles.tokenCard}>
+        <Text style={styles.tokenLabel}>TOKEN NUMBER</Text>
+        <Text style={styles.tokenNumber}>#{appointment.tokenNumber}</Text>
+        <Text style={styles.tokenReference}>
+          Booking reference: {appointment.bookingNumber || 'N/A'}
+        </Text>
+      </View>
 
       <View style={styles.card}>
         <Text style={styles.label}>Doctor</Text>
@@ -210,6 +262,29 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         <Text style={styles.value}>{appointment.bookingNumber}</Text>
       </View>
 
+      <View style={styles.receiptActions}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          disabled={receiptAction !== null}
+          style={[styles.receiptButton, receiptAction !== null && styles.buttonDisabled]}
+          onPress={handlePrintReceipt}
+        >
+          <Text style={styles.receiptButtonText}>
+            {receiptAction === 'print' ? 'Opening print...' : 'Print receipt'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          accessibilityRole="button"
+          disabled={receiptAction !== null}
+          style={[styles.receiptButton, styles.shareButton, receiptAction !== null && styles.buttonDisabled]}
+          onPress={handleShareReceipt}
+        >
+          <Text style={styles.shareButtonText}>
+            {receiptAction === 'share' ? 'Opening share...' : 'Share receipt'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {CANCELLABLE_STATUSES.includes(appointment.status) && (
         <View style={styles.cancelSection}>
           <Text style={styles.cancelHint}>
@@ -254,6 +329,51 @@ const styles = StyleSheet.create({
     color: colors.text,
     marginBottom: 16,
   },
+  confirmationCard: {
+    backgroundColor: colors.brandLight,
+    borderColor: colors.brandBorder,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 16,
+  },
+  confirmationTitle: {
+    color: colors.brandDark,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  confirmationText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  tokenCard: {
+    backgroundColor: colors.brandLight,
+    borderColor: colors.brandBorder,
+    borderWidth: 2,
+    borderRadius: 12,
+    padding: 18,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  tokenLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+  },
+  tokenNumber: {
+    color: colors.brandDark,
+    fontSize: 42,
+    fontWeight: '900',
+    marginVertical: 3,
+  },
+  tokenReference: {
+    color: colors.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+  },
   card: {
     backgroundColor: colors.surface,
     borderRadius: 10,
@@ -271,6 +391,38 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.text,
     marginTop: 4,
+  },
+  receiptActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  receiptButton: {
+    minHeight: 46,
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.brand,
+    backgroundColor: colors.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  receiptButtonText: {
+    color: colors.surface,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  shareButton: {
+    backgroundColor: colors.surface,
+  },
+  shareButtonText: {
+    color: colors.brandDark,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
   cancelledStatus: {
     color: colors.danger,

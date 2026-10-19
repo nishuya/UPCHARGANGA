@@ -11,6 +11,7 @@ import AuthScreen from './src/screens/AuthScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import AppointmentsScreen from './src/screens/AppointmentsScreen';
 import AppointmentDetailScreen from './src/screens/AppointmentDetailScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import ChooseCityScreen from './src/screens/ChooseCityScreen';
 import HospitalSelectionScreen from './src/screens/HospitalSelectionScreen';
@@ -18,11 +19,30 @@ import DoctorSelectionScreen from './src/screens/DoctorSelectionScreen';
 import BookingScreen from './src/screens/BookingScreen';
 import BrandHeader from './src/components/BrandHeader';
 import { colors } from './src/theme';
+import { patientApi } from './src/services/patientApi';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
 function PatientTabs() {
+  const [unreadNotificationCount, setUnreadNotificationCount] = React.useState(0);
+  const refreshUnreadNotificationCount = React.useCallback(async () => {
+    try {
+      const response = await patientApi.getUnreadNotifications(100);
+      setUnreadNotificationCount(response.data.data?.notifications?.length || 0);
+    } catch (error) {
+      console.log('Unread notification count error:', error?.response?.data || error.message);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    refreshUnreadNotificationCount();
+    const interval = setInterval(refreshUnreadNotificationCount, 60000);
+    return () => {
+      clearInterval(interval);
+    };
+  }, [refreshUnreadNotificationCount]);
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -80,6 +100,25 @@ function PatientTabs() {
           ),
         }}
       />
+      <Tab.Screen
+        name="NotificationsTab"
+        options={{
+          title: 'Notifications',
+          tabBarLabel: 'Notifications',
+          tabBarBadge: unreadNotificationCount > 0 ? unreadNotificationCount : undefined,
+          tabBarBadgeStyle: { backgroundColor: colors.danger, color: colors.surface },
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? 'notifications' : 'notifications-outline'} size={22} color={color} />
+          ),
+        }}
+      >
+        {(props) => (
+          <NotificationsScreen
+            {...props}
+            onUnreadCountChange={setUnreadNotificationCount}
+          />
+        )}
+      </Tab.Screen>
       <Tab.Screen
         name="ProfileTab"
         component={ProfileScreen}

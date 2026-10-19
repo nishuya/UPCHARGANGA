@@ -17,4 +17,7 @@ export const patientApi = {
   bookAppointment: (payload) => api.post('/patients/appointments', payload),
   cancelAppointment: (id, reason) =>
     api.patch(`/patients/appointments/${id}/cancel`, { cancellationReason: reason }),
+  getUnreadNotifications: (limit = 20) => api.get('/notifications', { params: { limit } }),
+  getAllNotifications: (limit = 100) => api.get('/notifications/all', { params: { limit } }),
+  markNotificationAsRead: (id) => api.patch(`/notifications/${id}/read`),
 };
