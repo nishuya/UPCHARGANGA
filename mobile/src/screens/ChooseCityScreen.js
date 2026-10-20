@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -20,21 +20,25 @@ export default function ChooseCityScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
-    const loadCities = async () => {
-      try {
-        const response = await patientApi.getCities();
-        setCities(response.data.data?.cities || []);
-      } catch (requestError) {
-        console.log('City load error:', requestError?.response?.data || requestError.message);
-        setError(true);
-      } finally {
-        setLoading(false);
+  const loadCities = useCallback(async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      const response = await patientApi.getCities();
+      setCities(response.data.data?.cities || []);
+    } catch (requestError) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('City load error:', requestError?.message || requestError);
       }
-    };
-
-    loadCities();
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadCities();
+  }, [loadCities]);
 
   const filteredCities = useMemo(
     () => cities.filter((city) => city.name?.toLowerCase().includes(search.trim().toLowerCase())),
@@ -74,6 +78,9 @@ export default function ChooseCityScreen({ navigation }) {
           ) : error ? (
             <View style={styles.state}>
               <Text style={styles.stateText}>Couldn't load cities right now. Please try again.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={loadCities}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.state}>
@@ -222,5 +229,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     textAlign: 'center',
+  },
+  retryText: {
+    color: colors.brandDark,
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 6,
   },
 });

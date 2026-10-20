@@ -20,6 +20,7 @@ import BookingScreen from './src/screens/BookingScreen';
 import BrandHeader from './src/components/BrandHeader';
 import { colors } from './src/theme';
 import { patientApi } from './src/services/patientApi';
+import { connectSocket } from './src/services/socketService';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -31,15 +32,32 @@ function PatientTabs() {
       const response = await patientApi.getUnreadNotifications(100);
       setUnreadNotificationCount(response.data.data?.notifications?.length || 0);
     } catch (error) {
-      console.log('Unread notification count error:', error?.response?.data || error.message);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Unread notification count error:', error?.message || error);
+      }
     }
   }, []);
 
   React.useEffect(() => {
+    let active = true;
+    let socket;
     refreshUnreadNotificationCount();
-    const interval = setInterval(refreshUnreadNotificationCount, 60000);
+
+    connectSocket()
+      .then((connectedSocket) => {
+        if (!active || !connectedSocket) return;
+        socket = connectedSocket;
+        socket.on('newNotification', refreshUnreadNotificationCount);
+      })
+      .catch((error) => {
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn('Unable to connect to notification updates:', error?.message || error);
+        }
+      });
+
     return () => {
-      clearInterval(interval);
+      active = false;
+      socket?.off('newNotification', refreshUnreadNotificationCount);
     };
   }, [refreshUnreadNotificationCount]);
 
@@ -134,10 +152,14 @@ function PatientTabs() {
 }
 
 function AppNavigator() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, sessionError, loadSession } = useAuth();
 
   if (isLoading) {
     return <LoadingScreen />;
+  }
+
+  if (sessionError) {
+    return <LoadingScreen error={sessionError} onRetry={loadSession} />;
   }
 
   return (

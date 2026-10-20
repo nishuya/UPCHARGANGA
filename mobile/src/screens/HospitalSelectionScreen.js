@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -27,21 +27,25 @@ export default function HospitalSelectionScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
-    const loadHospitals = async () => {
-      try {
-        const response = await patientApi.getHospitals({ city: city._id });
-        setHospitals(response.data.data?.hospitals || []);
-      } catch (requestError) {
-        console.log('Hospital load error:', requestError?.response?.data || requestError.message);
-        setError(true);
-      } finally {
-        setLoading(false);
+  const loadHospitals = useCallback(async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      const response = await patientApi.getHospitals({ city: city._id });
+      setHospitals(response.data.data?.hospitals || []);
+    } catch (requestError) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Hospital load error:', requestError?.message || requestError);
       }
-    };
-
-    loadHospitals();
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [city._id]);
+
+  useEffect(() => {
+    loadHospitals();
+  }, [loadHospitals]);
 
   const filteredHospitals = useMemo(
     () => hospitals.filter((hospital) => hospital.name?.toLowerCase().includes(search.trim().toLowerCase())),
@@ -81,6 +85,9 @@ export default function HospitalSelectionScreen({ route, navigation }) {
           ) : error ? (
             <View style={styles.state}>
               <Text style={styles.stateText}>Couldn't load hospitals right now. Please try again.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={loadHospitals}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.state}>
@@ -194,4 +201,5 @@ const styles = StyleSheet.create({
   },
   stateTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   stateText: { color: colors.textMuted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  retryText: { color: colors.brandDark, fontSize: 14, fontWeight: '700', marginTop: 6 },
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -21,21 +21,25 @@ export default function DoctorSelectionScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  useEffect(() => {
-    const loadDoctors = async () => {
-      try {
-        const response = await patientApi.getDoctors({ hospital: hospital._id });
-        setDoctors(response.data.data?.doctors || []);
-      } catch (requestError) {
-        console.log('Doctor load error:', requestError?.response?.data || requestError.message);
-        setError(true);
-      } finally {
-        setLoading(false);
+  const loadDoctors = useCallback(async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      const response = await patientApi.getDoctors({ hospital: hospital._id });
+      setDoctors(response.data.data?.doctors || []);
+    } catch (requestError) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Doctor load error:', requestError?.message || requestError);
       }
-    };
-
-    loadDoctors();
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [hospital._id]);
+
+  useEffect(() => {
+    loadDoctors();
+  }, [loadDoctors]);
 
   const filteredDoctors = useMemo(
     () =>
@@ -83,6 +87,9 @@ export default function DoctorSelectionScreen({ route, navigation }) {
           ) : error ? (
             <View style={styles.state}>
               <Text style={styles.stateText}>Couldn't load doctors right now. Please try again.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={loadDoctors}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.state}>
@@ -191,4 +198,5 @@ const styles = StyleSheet.create({
   state: { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 10, padding: 20, alignItems: 'center', gap: 9 },
   stateTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   stateText: { color: colors.textMuted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  retryText: { color: colors.brandDark, fontSize: 14, fontWeight: '700', marginTop: 6 },
 });

@@ -39,13 +39,6 @@ const protect = asyncHandler(async (req, res, next) => {
     })
     .populate('hospital', 'name');
 
-  console.log('🔐 [AUTH] After populate - assignedDoctor:', {
-    populated: JSON.stringify(user?.assignedDoctor, null, 2),
-    doctorId: user?.assignedDoctor?._id,
-    userId: user?.assignedDoctor?.user?._id,
-    userName: user?.assignedDoctor?.user?.fullName,
-  });
-
   if (!user) {
     throw new ApiError(401, 'The user belonging to this token no longer exists.');
   }
@@ -57,14 +50,6 @@ const protect = asyncHandler(async (req, res, next) => {
   if (user.isPasswordChangedAfter(decoded.iat)) {
     throw new ApiError(401, 'Password was recently changed. Please log in again.');
   }
-
-  console.log('🔐 [AUTH] User authenticated:', {
-    userId: user._id,
-    role: user.role,
-    assignedDoctor: user.assignedDoctor ? user.assignedDoctor._id : null,
-    assignedDoctorName: user.assignedDoctor?.user?.fullName,
-    hospital: user.hospital?.name,
-  });
 
   req.user = user;
   next();

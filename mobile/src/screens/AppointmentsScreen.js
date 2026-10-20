@@ -1,8 +1,8 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -31,18 +31,37 @@ const normalizeStatus = (status) => String(status || '').trim().toLowerCase().re
 export default function AppointmentsScreen({ navigation }) {
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const latestRequest = useRef(0);
 
   const loadAppointments = useCallback(async () => {
+    const requestId = ++latestRequest.current;
+    setLoadError(false);
     try {
       const response = await patientApi.getMyAppointments();
-      setAppointments(response.data.data?.appointments || []);
+      if (requestId === latestRequest.current) {
+        setAppointments(response.data.data?.appointments || []);
+      }
     } catch (error) {
-      console.log('Appointments error:', error?.response?.data || error.message);
-      Alert.alert('Unable to load appointments', 'Please try again later.');
+      if (requestId === latestRequest.current) {
+        setLoadError(true);
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn('Appointments error:', error?.message || error);
+        }
+      }
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadAppointments();
+  }, [loadAppointments]);
 
   useFocusEffect(
     useCallback(() => {
@@ -66,6 +85,11 @@ export default function AppointmentsScreen({ navigation }) {
         <Text style={styles.subtitle}>
           Track your bookings, queue positions, and appointment history.
         </Text>
+        {loadError && appointments.length > 0 && (
+          <Text style={styles.errorNotice}>
+            Couldn't refresh appointments. Showing the last loaded information.
+          </Text>
+        )}
         <TouchableOpacity style={styles.bookButton} onPress={() => navigation.navigate('BookTab')}>
           <Text style={styles.bookButtonText}>+ Book new</Text>
         </TouchableOpacity>
@@ -75,13 +99,31 @@ export default function AppointmentsScreen({ navigation }) {
         data={appointments}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={[colors.brand]}
+            tintColor={colors.brand}
+          />
+        }
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No appointments match this filter</Text>
-            <Text style={styles.emptyText}>
-              You haven&apos;t booked any appointments yet. Start by booking your first appointment.
-            </Text>
-          </View>
+          loadError ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>Couldn't load appointments</Text>
+              <Text style={styles.emptyText}>Check your connection and try again.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={loadAppointments}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>No appointments yet</Text>
+              <Text style={styles.emptyText}>
+                You haven&apos;t booked any appointments yet. Start by booking your first appointment.
+              </Text>
+            </View>
+          )
         }
         renderItem={({ item }) => (
           <TouchableOpacity
@@ -142,6 +184,11 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 14,
     lineHeight: 21,
+  },
+  errorNotice: {
+    color: colors.danger,
+    fontSize: 12,
+    marginTop: 8,
   },
   bookButton: {
     alignSelf: 'flex-start',
@@ -256,5 +303,10 @@ const styles = StyleSheet.create({
     marginTop: 8,
     color: colors.textMuted,
     textAlign: 'center',
+  },
+  retryText: {
+    color: colors.brandDark,
+    fontWeight: '700',
+    marginTop: 12,
   },
 });

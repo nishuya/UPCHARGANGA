@@ -39,7 +39,9 @@ export default function NotificationsScreen({ navigation, onUnreadCountChange })
       const response = await patientApi.getAllNotifications();
       setNotifications(response.data.data?.notifications || []);
     } catch (error) {
-      console.log('Notifications error:', error?.response?.data || error.message);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Notifications error:', error?.message || error);
+      }
       Alert.alert('Unable to load notifications', 'Please try again later.');
     } finally {
       setLoading(false);
@@ -53,28 +55,32 @@ export default function NotificationsScreen({ navigation, onUnreadCountChange })
     }, [loadNotifications])
   );
 
-  useEffect(() => {
-    let active = true;
-    let socket;
-    const refreshForNewNotification = () => {
-      if (active) loadNotifications();
-    };
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      let socket;
+      const refreshForNewNotification = () => {
+        if (active) loadNotifications();
+      };
 
-    connectSocket()
-      .then((connectedSocket) => {
-        if (!active || !connectedSocket) return;
-        socket = connectedSocket;
-        socket.on('newNotification', refreshForNewNotification);
-      })
-      .catch((error) => {
-        console.log('Unable to connect to notification updates:', error?.message || error);
-      });
+      connectSocket()
+        .then((connectedSocket) => {
+          if (!active || !connectedSocket) return;
+          socket = connectedSocket;
+          socket.on('newNotification', refreshForNewNotification);
+        })
+        .catch((error) => {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            console.warn('Unable to connect to notification updates:', error?.message || error);
+          }
+        });
 
-    return () => {
-      active = false;
-      socket?.off('newNotification', refreshForNewNotification);
-    };
-  }, [loadNotifications]);
+      return () => {
+        active = false;
+        socket?.off('newNotification', refreshForNewNotification);
+      };
+    }, [loadNotifications])
+  );
 
   const filteredNotifications = useMemo(
     () =>
@@ -96,7 +102,9 @@ export default function NotificationsScreen({ navigation, onUnreadCountChange })
         )
       );
     } catch (error) {
-      console.log('Mark notification as read error:', error?.response?.data || error.message);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Mark notification as read error:', error?.message || error);
+      }
       Alert.alert('Unable to update notification', 'Please try again.');
     }
   };
@@ -110,7 +118,9 @@ export default function NotificationsScreen({ navigation, onUnreadCountChange })
       ));
       setNotifications((current) => current.map((item) => ({ ...item, isRead: true })));
     } catch (error) {
-      console.log('Mark all notifications as read error:', error?.response?.data || error.message);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Mark all notifications as read error:', error?.message || error);
+      }
       Alert.alert('Unable to update notifications', 'Please try again.');
       loadNotifications();
     }

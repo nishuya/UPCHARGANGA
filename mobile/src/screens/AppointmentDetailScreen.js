@@ -9,9 +9,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Print from 'expo-print';
 
-import { patientApi } from '../services/patientApi';
+import { invalidateDoctorLookupCache, patientApi } from '../services/patientApi';
 import { connectSocket } from '../services/socketService';
 import { colors } from '../theme';
 import {
@@ -38,73 +39,104 @@ const formatDate = (value) => {
 export default function AppointmentDetailScreen({ route, navigation }) {
   const { appointmentId, appointment: initialAppointment, bookingConfirmed } = route.params;
   const [appointment, setAppointment] = useState(initialAppointment || null);
+  const [detailLoadError, setDetailLoadError] = useState(false);
   const [queueEntry, setQueueEntry] = useState(null);
   const [loading, setLoading] = useState(!initialAppointment);
   const [cancelling, setCancelling] = useState(false);
   const [receiptAction, setReceiptAction] = useState(null);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [queueUpdatedAt, setQueueUpdatedAt] = useState(0);
 
-  const refreshQueueEntry = useCallback(async () => {
-    try {
-      const response = await patientApi.getQueueEntry(appointmentId);
-      setQueueEntry(response.data.data?.queueEntry || null);
-    } catch (error) {
-      console.log('Queue estimate refresh error:', error?.response?.data || error.message);
+  const loadDetails = useCallback(() => {
+    if (initialAppointment) {
+      setAppointment(initialAppointment);
+      return;
     }
-  }, [appointmentId]);
 
-  const loadDetails = useCallback(async () => {
-    try {
-      const [appointmentRes, queueRes] = await Promise.all([
-        patientApi.getAppointmentById(appointmentId),
-        patientApi.getQueueEntry(appointmentId),
-      ]);
-
-      setAppointment(appointmentRes.data.data?.appointment || null);
-      setQueueEntry(queueRes.data.data?.queueEntry || null);
-    } catch (error) {
-      console.log('Appointment detail error:', error?.response?.data || error.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [appointmentId]);
+    patientApi
+      .getAppointmentById(appointmentId)
+      .then((response) => {
+        setDetailLoadError(false);
+        setAppointment(response.data.data?.appointment || null);
+      })
+      .catch((error) => {
+        setDetailLoadError(true);
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn('Appointment detail error:', error?.message || error);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [appointmentId, initialAppointment]);
 
   useEffect(() => {
     loadDetails();
   }, [loadDetails]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      let socket;
       setCurrentTime(Date.now());
+      let latestQueueUpdateAt = 0;
+      let queueRequestInFlight = false;
+      const refreshQueueEntry = async () => {
+        if (queueRequestInFlight) return;
+        queueRequestInFlight = true;
+        const requestStartedAt = Date.now();
+        try {
+          const response = await patientApi.getQueueEntry(appointmentId);
+          if (active && requestStartedAt >= latestQueueUpdateAt) {
+            const updatedAt = Date.now();
+            setQueueEntry(response.data.data?.queueEntry || null);
+            setQueueUpdatedAt(updatedAt);
+            setCurrentTime(updatedAt);
+          }
+        } catch (error) {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            console.warn('Queue estimate refresh error:', error?.message || error);
+          }
+        } finally {
+          queueRequestInFlight = false;
+        }
+      };
+      const handleEtaUpdate = (payload) => {
+        if (String(payload?.appointmentId) !== String(appointmentId)) return;
+        latestQueueUpdateAt = Date.now();
+        setQueueEntry((prev) => ({ ...(prev || {}), ...payload }));
+        setQueueUpdatedAt(latestQueueUpdateAt);
+        setCurrentTime(latestQueueUpdateAt);
+      };
+
+      const fallbackInterval = setInterval(() => {
+        setCurrentTime(Date.now());
+        if (!socket?.connected) refreshQueueEntry();
+      }, 60000);
+
       refreshQueueEntry();
-    }, 15000);
+      connectSocket()
+        .then((connectedSocket) => {
+          if (!active || !connectedSocket) return;
+          socket = connectedSocket;
+          socket.on('patient:eta-updated', handleEtaUpdate);
+          socket.on('patient:called', handleEtaUpdate);
+          socket.on('connect', refreshQueueEntry);
+          if (socket.connected) refreshQueueEntry();
+        })
+        .catch((error) => {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            console.warn('Unable to connect to live queue updates:', error?.message || error);
+          }
+        });
 
-    return () => clearInterval(interval);
-  }, [refreshQueueEntry]);
-
-  useEffect(() => {
-    let active = true;
-    let socket;
-    const handleEtaUpdate = (payload) => {
-      if (payload?.appointmentId && payload.appointmentId !== appointmentId) return;
-      setQueueEntry((prev) => ({ ...(prev || {}), ...payload }));
-    };
-
-    connectSocket().then((connectedSocket) => {
-      if (!active || !connectedSocket) return;
-      socket = connectedSocket;
-      socket.on('patient:eta-updated', handleEtaUpdate);
-      socket.on('patient:called', handleEtaUpdate);
-    }).catch((error) => {
-      console.log('Unable to connect to live queue updates:', error?.message || error);
-    });
-
-    return () => {
-      active = false;
-      socket?.off('patient:eta-updated', handleEtaUpdate);
-      socket?.off('patient:called', handleEtaUpdate);
-    };
-  }, [appointmentId]);
+      return () => {
+        active = false;
+        clearInterval(fallbackInterval);
+        socket?.off('patient:eta-updated', handleEtaUpdate);
+        socket?.off('patient:called', handleEtaUpdate);
+        socket?.off('connect', refreshQueueEntry);
+      };
+    }, [appointmentId])
+  );
 
   const handleCancel = async () => {
     if (cancelling || !CANCELLABLE_STATUSES.includes(appointment?.status)) return;
@@ -112,6 +144,7 @@ export default function AppointmentDetailScreen({ route, navigation }) {
     setCancelling(true);
     try {
       await patientApi.cancelAppointment(appointmentId, 'Patient cancelled from mobile app');
+      invalidateDoctorLookupCache();
       setAppointment((current) => ({ ...current, status: 'cancelled' }));
       setQueueEntry((current) => ({
         ...(current || {}),
@@ -150,7 +183,9 @@ export default function AppointmentDetailScreen({ route, navigation }) {
     try {
       await Print.printAsync({ html: createAppointmentReceiptHtml(appointment) });
     } catch (error) {
-      console.log('Print appointment receipt error:', error?.message || error);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Print appointment receipt error:', error?.message || error);
+      }
       Alert.alert('Unable to print receipt', 'Please try again.');
     } finally {
       setReceiptAction(null);
@@ -166,7 +201,9 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         message: createAppointmentShareMessage(appointment),
       });
     } catch (error) {
-      console.log('Share appointment receipt error:', error?.message || error);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Share appointment receipt error:', error?.message || error);
+      }
       Alert.alert('Unable to share receipt', 'Please try again.');
     } finally {
       setReceiptAction(null);
@@ -184,16 +221,32 @@ export default function AppointmentDetailScreen({ route, navigation }) {
   if (!appointment) {
     return (
       <View style={styles.centered}>
-        <Text>Appointment not found.</Text>
+        <Text>
+          {detailLoadError ? "Couldn't load appointment details." : 'Appointment not found.'}
+        </Text>
+        {detailLoadError && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => {
+              setLoading(true);
+              loadDetails();
+            }}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
 
   const appointmentStatus = normalizeStatus(appointment.status);
   const queueEstimateStatus = normalizeStatus(queueEntry?.estimateStatus);
+  const queueIsFresh = queueUpdatedAt > 0 && currentTime - queueUpdatedAt <= 120000;
   const displayStatus = ['cancelled', 'expired'].includes(appointmentStatus)
     ? appointmentStatus
-    : queueEstimateStatus || appointmentStatus;
+    : queueIsFresh
+      ? queueEstimateStatus || appointmentStatus
+      : appointmentStatus;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -253,10 +306,14 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         </Text>
 
         <Text style={styles.label}>Estimated consultation time</Text>
-        <Text style={styles.value}>{getEstimateText(queueEntry, currentTime)}</Text>
+        <Text style={styles.value}>
+          {queueIsFresh ? getEstimateText(queueEntry, currentTime) : 'Refreshing queue estimate…'}
+        </Text>
 
         <Text style={styles.label}>Queue position</Text>
-        <Text style={styles.value}>{queueEntry?.queuePosition ?? 'Not started'}</Text>
+        <Text style={styles.value}>
+          {queueIsFresh ? queueEntry?.queuePosition ?? 'Not started' : 'Updating…'}
+        </Text>
 
         <Text style={styles.label}>Booking reference</Text>
         <Text style={styles.value}>{appointment.bookingNumber}</Text>
@@ -328,6 +385,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
     marginBottom: 16,
+  },
+  retryText: {
+    color: colors.brandDark,
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 12,
   },
   confirmationCard: {
     backgroundColor: colors.brandLight,

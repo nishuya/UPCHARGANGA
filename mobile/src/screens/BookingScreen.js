@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 
-import { patientApi } from '../services/patientApi';
+import { invalidateDoctorLookupCache, patientApi } from '../services/patientApi';
 import BookingProgress from '../components/BookingProgress';
 import { colors } from '../theme';
 
@@ -26,13 +26,16 @@ export default function BookingScreen({ route, navigation }) {
   const [reasonForVisit, setReasonForVisit] = useState('');
   const [symptoms, setSymptoms] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const bookingInProgress = useRef(false);
 
   const handleBooking = async () => {
+    if (bookingInProgress.current) return;
     if (!appointmentDate) {
       Alert.alert('Date required', 'Please enter a valid appointment date.');
       return;
     }
 
+    bookingInProgress.current = true;
     setSubmitting(true);
     try {
       const payload = {
@@ -49,6 +52,7 @@ export default function BookingScreen({ route, navigation }) {
 
       const response = await patientApi.bookAppointment(payload);
       const result = response.data.data;
+      invalidateDoctorLookupCache();
 
       navigation.navigate('AppointmentDetail', {
         appointmentId: result.appointment._id,
@@ -59,6 +63,7 @@ export default function BookingScreen({ route, navigation }) {
       const message = error?.response?.data?.message || 'Booking failed. Please try again.';
       Alert.alert('Booking failed', message);
     } finally {
+      bookingInProgress.current = false;
       setSubmitting(false);
     }
   };

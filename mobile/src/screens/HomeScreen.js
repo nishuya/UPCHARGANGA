@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -8,9 +8,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { useAuth } from '../context/AuthContext';
 import { patientApi } from '../services/patientApi';
+import { connectSocket } from '../services/socketService';
 import { colors } from '../theme';
 import { formatHospitalAddress, getEstimateText } from '../utils/dateTime';
 
@@ -31,6 +33,9 @@ export default function HomeScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [queueUpdatedAt, setQueueUpdatedAt] = useState(0);
+  const latestHomeRequest = useRef(0);
+  const queueAppointmentId = useRef(null);
 
   const upcoming = appointments.filter((appointment) =>
     UPCOMING_STATUSES.includes(appointment.status)
@@ -38,16 +43,25 @@ export default function HomeScreen({ navigation }) {
   const nextAppointment = upcoming[0];
 
   const loadHomeData = useCallback(async () => {
+    const requestId = ++latestHomeRequest.current;
     setLoadError(false);
     try {
       const response = await patientApi.getMyAppointments();
-      setAppointments(response.data.data?.appointments || []);
+      if (requestId === latestHomeRequest.current) {
+        setAppointments(response.data.data?.appointments || []);
+      }
     } catch (error) {
-      console.log('Home screen load error', error?.response?.data || error.message);
-      setLoadError(true);
+      if (requestId === latestHomeRequest.current) {
+        setLoadError(true);
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn('Home screen load error:', error?.message || error);
+        }
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === latestHomeRequest.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -60,33 +74,85 @@ export default function HomeScreen({ navigation }) {
     loadHomeData();
   }, [loadHomeData]);
 
-  useEffect(() => {
-    const appointmentId = nextAppointment?._id;
-    if (!appointmentId) {
-      setQueueEntry(null);
-      return undefined;
-    }
-
-    let active = true;
-    const refreshQueueEntry = async () => {
-      try {
-        const response = await patientApi.getQueueEntry(appointmentId);
-        if (active) {
-          setQueueEntry(response.data.data?.queueEntry || null);
-          setCurrentTime(Date.now());
-        }
-      } catch (error) {
-        console.log('Home estimate error:', error?.response?.data || error.message);
+  useFocusEffect(
+    useCallback(() => {
+      const appointmentId = nextAppointment?._id;
+      if (!appointmentId) {
+        queueAppointmentId.current = null;
+        setQueueEntry(null);
+        setQueueUpdatedAt(0);
+        return undefined;
       }
-    };
+      setCurrentTime(Date.now());
+      if (queueAppointmentId.current !== appointmentId) {
+        queueAppointmentId.current = appointmentId;
+        setQueueEntry(null);
+        setQueueUpdatedAt(0);
+      }
 
-    refreshQueueEntry();
-    const interval = setInterval(refreshQueueEntry, 15000);
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, [nextAppointment?._id]);
+      let active = true;
+      let socket;
+      let latestQueueUpdateAt = 0;
+      let queueRequestInFlight = false;
+      const refreshQueueEntry = async () => {
+        if (queueRequestInFlight) return;
+        queueRequestInFlight = true;
+        const requestStartedAt = Date.now();
+        try {
+          const response = await patientApi.getQueueEntry(appointmentId);
+          if (active && requestStartedAt >= latestQueueUpdateAt) {
+            const updatedAt = Date.now();
+            setQueueEntry(response.data.data?.queueEntry || null);
+            setQueueUpdatedAt(updatedAt);
+            setCurrentTime(updatedAt);
+          }
+        } catch (error) {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            console.warn('Home estimate error:', error?.message || error);
+          }
+        } finally {
+          queueRequestInFlight = false;
+        }
+      };
+
+      const handleQueueUpdate = (payload) => {
+        if (String(payload?.appointmentId) !== String(appointmentId)) return;
+        latestQueueUpdateAt = Date.now();
+        setQueueEntry((current) => ({ ...(current || {}), ...payload }));
+        setQueueUpdatedAt(latestQueueUpdateAt);
+        setCurrentTime(latestQueueUpdateAt);
+      };
+
+      const fallbackInterval = setInterval(() => {
+        setCurrentTime(Date.now());
+        if (!socket?.connected) refreshQueueEntry();
+      }, 60000);
+
+      refreshQueueEntry();
+      connectSocket()
+        .then((connectedSocket) => {
+          if (!active || !connectedSocket) return;
+          socket = connectedSocket;
+          socket.on('patient:eta-updated', handleQueueUpdate);
+          socket.on('patient:called', handleQueueUpdate);
+          socket.on('connect', refreshQueueEntry);
+          if (socket.connected) refreshQueueEntry();
+        })
+        .catch((error) => {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            console.warn('Unable to connect to live queue updates:', error?.message || error);
+          }
+        });
+
+      return () => {
+        active = false;
+        clearInterval(fallbackInterval);
+        socket?.off('patient:eta-updated', handleQueueUpdate);
+        socket?.off('patient:called', handleQueueUpdate);
+        socket?.off('connect', refreshQueueEntry);
+      };
+    }, [nextAppointment?._id])
+  );
 
   return (
     <ScrollView
@@ -120,7 +186,7 @@ export default function HomeScreen({ navigation }) {
           <ActivityIndicator color={colors.brand} />
           <Text style={styles.stateText}>Loading your appointments…</Text>
         </View>
-      ) : loadError ? (
+      ) : loadError && appointments.length === 0 ? (
         <View style={styles.stateCard}>
           <Text style={styles.stateTitle}>Couldn't load your appointments right now.</Text>
           <TouchableOpacity onPress={loadHomeData}>
@@ -128,22 +194,47 @@ export default function HomeScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       ) : upcoming.length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.sectionLabel}>YOUR NEXT APPOINTMENT</Text>
-          <Text style={styles.emptyTitle}>No upcoming appointments</Text>
-          <Text style={styles.emptyText}>
-            Book your first appointment to get started. You'll receive a token number and can track
-            your position in real-time.
-          </Text>
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => navigation.navigate('BookTab')}
-          >
-            <Text style={styles.secondaryButtonText}>Book an appointment</Text>
-          </TouchableOpacity>
-        </View>
+        <>
+          {loadError && (
+            <View style={styles.stateCard}>
+              <Text style={styles.stateTitle}>Couldn't refresh appointment status.</Text>
+              <TouchableOpacity onPress={loadHomeData}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <View style={styles.emptyCard}>
+            <Text style={styles.sectionLabel}>YOUR NEXT APPOINTMENT</Text>
+            <Text style={styles.emptyTitle}>
+              {loadError ? 'Appointment status unavailable' : 'No upcoming appointments'}
+            </Text>
+            <Text style={styles.emptyText}>
+              {loadError
+                ? 'We could not confirm your latest appointment status. Refresh to try again.'
+                : "Book your first appointment to get started. You'll receive a token number and can track your position in real-time."}
+            </Text>
+            {!loadError && (
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={() => navigation.navigate('BookTab')}
+              >
+                <Text style={styles.secondaryButtonText}>Book an appointment</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </>
       ) : (
         <>
+          {loadError && (
+            <View style={styles.stateCard}>
+              <Text style={styles.stateText}>
+                Couldn't refresh appointments. Showing the last loaded information.
+              </Text>
+              <TouchableOpacity onPress={loadHomeData}>
+                <Text style={styles.retryText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <Text style={styles.sectionLabel}>YOUR NEXT APPOINTMENT</Text>
           <View style={styles.featuredCard}>
             <Text style={styles.caption}>DOCTOR</Text>
@@ -169,7 +260,11 @@ export default function HomeScreen({ navigation }) {
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Estimated consultation</Text>
-                <Text style={styles.detailValue}>{getEstimateText(queueEntry, currentTime)}</Text>
+                <Text style={styles.detailValue}>
+                  {queueUpdatedAt && currentTime - queueUpdatedAt <= 120000
+                    ? getEstimateText(queueEntry, currentTime)
+                    : 'Refreshing queue estimate…'}
+                </Text>
               </View>
             </View>
 

@@ -1,21 +1,40 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   clearTokens,
   extractRefreshTokenFromHeaders,
+  getCachedUser,
   getStoredAccessToken,
+  getStoredRefreshToken,
+  saveCachedUser,
   saveTokens,
 } from '../services/api';
 import { patientApi } from '../services/patientApi';
-import { connectSocket, disconnectSocket } from '../services/socketService';
+import { disconnectSocket } from '../services/socketService';
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(null);
+  const sessionGeneration = useRef(0);
+
+  const cacheUserProfile = async (profile) => {
+    try {
+      await saveCachedUser(profile);
+    } catch (error) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('Unable to cache patient profile:', error?.message || error);
+      }
+    }
+  };
 
   const loadSession = async () => {
+    const requestGeneration = ++sessionGeneration.current;
+    let cachedUser = null;
+    setSessionError(null);
+    setIsLoading(true);
     try {
       const accessToken = await getStoredAccessToken();
       if (!accessToken) {
@@ -23,28 +42,38 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
+      cachedUser = await getCachedUser();
+      if (cachedUser) {
+        if (requestGeneration !== sessionGeneration.current) return;
+        setUser(cachedUser);
+        setIsLoading(false);
+      }
+
       const response = await patientApi.me();
-      setUser(response.data.data?.user || null);
+      if (requestGeneration !== sessionGeneration.current) return;
+      const restoredUser = response.data.data?.user;
+      if (!restoredUser) {
+        throw new Error('The session response did not include a user.');
+      }
+      setUser(restoredUser);
+      await cacheUserProfile(restoredUser);
     } catch (error) {
-      setUser(null);
-      await clearTokens();
+      if (requestGeneration !== sessionGeneration.current) return;
+      if ([401, 403].includes(error?.response?.status)) {
+        setUser(null);
+        await clearTokens();
+      } else if (!cachedUser) {
+        setUser(null);
+        setSessionError('Unable to restore your session. Check your connection and try again.');
+      }
     } finally {
-      setIsLoading(false);
+      if (requestGeneration === sessionGeneration.current) setIsLoading(false);
     }
   };
 
   useEffect(() => {
     loadSession();
   }, []);
-
-  useEffect(() => {
-    if (user) {
-      connectSocket();
-      return;
-    }
-
-    disconnectSocket();
-  }, [user]);
 
   const persistAuthSession = async (authResponse) => {
     const payload = authResponse?.data?.data;
@@ -55,33 +84,38 @@ export const AuthProvider = ({ children }) => {
       refreshToken: extractRefreshTokenFromHeaders(authResponse?.headers),
     });
 
+    await cacheUserProfile(payload.user);
+    setSessionError(null);
     setUser(payload.user);
   };
 
   const signIn = async (payload) => {
+    sessionGeneration.current += 1;
     const response = await patientApi.login(payload);
     await persistAuthSession(response);
-    await connectSocket();
     return response.data.data;
   };
 
   const signUp = async (payload) => {
+    sessionGeneration.current += 1;
     const response = await patientApi.register(payload);
     await persistAuthSession(response);
-    await connectSocket();
     return response.data.data;
   };
 
   const signOut = async () => {
-    try {
-      await patientApi.logout();
-    } catch (error) {
-      // Ignore logout failures; clearing local session is the safety net.
-    }
-
+    sessionGeneration.current += 1;
+    const logoutRequest = getStoredRefreshToken()
+      .then((refreshToken) => patientApi.logout(refreshToken))
+      .catch((error) => {
+        if (typeof __DEV__ !== 'undefined' && __DEV__) {
+          console.warn('Logout request failed:', error?.message || error);
+        }
+      });
     disconnectSocket();
-    await clearTokens();
     setUser(null);
+    await clearTokens();
+    await logoutRequest;
   };
 
   const value = useMemo(
@@ -89,12 +123,13 @@ export const AuthProvider = ({ children }) => {
       user,
       setUser,
       isLoading,
+      sessionError,
       signIn,
       signUp,
       signOut,
       loadSession,
     }),
-    [user, isLoading]
+    [user, isLoading, sessionError]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
