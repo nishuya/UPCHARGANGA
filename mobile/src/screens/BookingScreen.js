@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +22,17 @@ const normalizeDateValue = (dateString) => {
   return date.toISOString().slice(0, 10);
 };
 
+const isValidDateValue = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsedDate.getUTCFullYear() === year &&
+    parsedDate.getUTCMonth() === month - 1 &&
+    parsedDate.getUTCDate() === day
+  );
+};
+
 export default function BookingScreen({ route, navigation }) {
   const { doctor, hospital, city, departmentId } = route.params;
   const [appointmentDate, setAppointmentDate] = useState(normalizeDateValue(new Date().toISOString()));
@@ -27,11 +40,12 @@ export default function BookingScreen({ route, navigation }) {
   const [symptoms, setSymptoms] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const bookingInProgress = useRef(false);
+  const reasonInput = useRef(null);
 
   const handleBooking = async () => {
     if (bookingInProgress.current) return;
-    if (!appointmentDate) {
-      Alert.alert('Date required', 'Please enter a valid appointment date.');
+    if (!isValidDateValue(appointmentDate)) {
+      Alert.alert('Invalid date', 'Enter the appointment date in YYYY-MM-DD format.');
       return;
     }
 
@@ -69,7 +83,15 @@ export default function BookingScreen({ route, navigation }) {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
       <BookingProgress current={4} />
       <Text style={styles.header}>Confirm your appointment</Text>
       <Text style={styles.subheader}>
@@ -81,10 +103,10 @@ export default function BookingScreen({ route, navigation }) {
         <Text style={styles.value}>Dr. {doctor.user?.fullName || 'Doctor'}</Text>
 
         <Text style={styles.label}>HOSPITAL</Text>
-        <Text style={styles.value}>{hospital.name}</Text>
+        <Text style={styles.value}>{hospital.name || 'Hospital'}</Text>
 
         <Text style={styles.label}>CITY</Text>
-        <Text style={styles.value}>{city.name}</Text>
+        <Text style={styles.value}>{city.name || 'City'}</Text>
       </View>
 
       <Text style={styles.label}>APPOINTMENT DATE</Text>
@@ -92,12 +114,18 @@ export default function BookingScreen({ route, navigation }) {
         style={styles.input}
         value={appointmentDate}
         onChangeText={setAppointmentDate}
-        placeholder="2026-10-18"
+        placeholder="YYYY-MM-DD"
         placeholderTextColor={colors.textSubtle}
+        accessibilityLabel="Appointment date, year month day"
+        keyboardType="numbers-and-punctuation"
+        maxLength={10}
+        returnKeyType="next"
+        onSubmitEditing={() => reasonInput.current?.focus()}
       />
 
       <Text style={styles.label}>REASON FOR VISIT</Text>
       <TextInput
+        ref={reasonInput}
         style={[styles.input, styles.textArea]}
         value={reasonForVisit}
         onChangeText={setReasonForVisit}
@@ -123,7 +151,8 @@ export default function BookingScreen({ route, navigation }) {
       >
         <Text style={styles.buttonText}>{submitting ? 'Booking...' : 'Book appointment'}</Text>
       </TouchableOpacity>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -134,6 +163,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 20,
+    paddingBottom: 32,
   },
   header: {
     fontSize: 26,

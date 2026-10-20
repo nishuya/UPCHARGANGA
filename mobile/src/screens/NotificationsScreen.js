@@ -27,7 +27,7 @@ const formatDateTime = (value) => {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
 };
 
-export default function NotificationsScreen({ navigation, onUnreadCountChange }) {
+export default function NotificationsScreen({ navigation, refreshUnreadCount }) {
   const [notifications, setNotifications] = useState([]);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -129,8 +129,8 @@ export default function NotificationsScreen({ navigation, onUnreadCountChange })
   const unreadCount = notifications.filter((notification) => !notification.isRead).length;
 
   useEffect(() => {
-    onUnreadCountChange?.(unreadCount);
-  }, [onUnreadCountChange, unreadCount]);
+    refreshUnreadCount?.();
+  }, [notifications, refreshUnreadCount]);
 
   return (
     <View style={styles.container}>

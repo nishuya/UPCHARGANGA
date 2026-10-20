@@ -18,12 +18,15 @@ import { formatHospitalAddress, getEstimateText } from '../utils/dateTime';
 
 const UPCOMING_STATUSES = ['pending', 'confirmed', 'checked-in', 'in-consultation'];
 
-const formatDate = (value) =>
-  new Date(value).toLocaleDateString(undefined, {
+const formatDate = (value) => {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return 'Date unavailable';
+  return date.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   });
+};
 
 export default function HomeScreen({ navigation }) {
   const { user } = useAuth();
@@ -255,7 +258,10 @@ export default function HomeScreen({ navigation }) {
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Date & time</Text>
                 <Text style={styles.detailValue}>
-                  {formatDate(nextAppointment.appointmentDate)} · {nextAppointment.timeSlot?.start}
+                  {formatDate(nextAppointment.appointmentDate)}
+                  {nextAppointment.timeSlot?.start
+                    ? ` · ${nextAppointment.timeSlot.start}`
+                    : ''}
                 </Text>
               </View>
               <View style={styles.detailRow}>
@@ -270,7 +276,7 @@ export default function HomeScreen({ navigation }) {
 
             <View style={styles.tokenRow}>
               <Text style={styles.caption}>YOUR TOKEN</Text>
-              <Text style={styles.token}>#{nextAppointment.tokenNumber}</Text>
+              <Text style={styles.token}>#{nextAppointment.tokenNumber ?? 'N/A'}</Text>
             </View>
 
             <TouchableOpacity

@@ -60,6 +60,8 @@ export default function DoctorSelectionScreen({ route, navigation }) {
         data={filteredDoctors}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         ListHeaderComponent={
           <>
             <BookingProgress current={3} />
@@ -75,6 +77,8 @@ export default function DoctorSelectionScreen({ route, navigation }) {
               placeholderTextColor={colors.textSubtle}
               value={search}
               onChangeText={setSearch}
+              returnKeyType="search"
+              autoCorrect={false}
             />
           </>
         }

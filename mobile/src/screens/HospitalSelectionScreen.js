@@ -58,6 +58,8 @@ export default function HospitalSelectionScreen({ route, navigation }) {
         data={filteredHospitals}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         ListHeaderComponent={
           <>
             <BookingProgress current={2} />
@@ -73,6 +75,8 @@ export default function HospitalSelectionScreen({ route, navigation }) {
               placeholderTextColor={colors.textSubtle}
               value={search}
               onChangeText={setSearch}
+              returnKeyType="search"
+              autoCorrect={false}
             />
           </>
         }

@@ -29,7 +29,9 @@ const normalizeStatus = (status) => String(status || '').trim().toLowerCase().re
 
 const formatDate = (value) => {
   if (!value) return 'N/A';
-  return new Date(value).toLocaleDateString(undefined, {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'N/A';
+  return date.toLocaleDateString(undefined, {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
@@ -262,7 +264,7 @@ export default function AppointmentDetailScreen({ route, navigation }) {
 
       <View style={styles.tokenCard}>
         <Text style={styles.tokenLabel}>TOKEN NUMBER</Text>
-        <Text style={styles.tokenNumber}>#{appointment.tokenNumber}</Text>
+        <Text style={styles.tokenNumber}>#{appointment.tokenNumber ?? 'N/A'}</Text>
         <Text style={styles.tokenReference}>
           Booking reference: {appointment.bookingNumber || 'N/A'}
         </Text>
@@ -288,7 +290,7 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         <Text style={styles.value}>{appointment.timeSlot?.start || 'N/A'} - {appointment.timeSlot?.end || 'N/A'}</Text>
 
         <Text style={styles.label}>Token number</Text>
-        <Text style={styles.value}>#{appointment.tokenNumber}</Text>
+        <Text style={styles.value}>#{appointment.tokenNumber ?? 'N/A'}</Text>
 
         <Text style={styles.label}>Queue status</Text>
         <Text
@@ -316,7 +318,7 @@ export default function AppointmentDetailScreen({ route, navigation }) {
         </Text>
 
         <Text style={styles.label}>Booking reference</Text>
-        <Text style={styles.value}>{appointment.bookingNumber}</Text>
+        <Text style={styles.value}>{appointment.bookingNumber || 'N/A'}</Text>
       </View>
 
       <View style={styles.receiptActions}>

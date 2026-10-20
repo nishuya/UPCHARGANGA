@@ -51,6 +51,8 @@ export default function ChooseCityScreen({ navigation }) {
         data={filteredCities}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         ListHeaderComponent={
           <>
             <BookingProgress current={1} />
@@ -66,6 +68,8 @@ export default function ChooseCityScreen({ navigation }) {
               placeholderTextColor={colors.textSubtle}
               value={search}
               onChangeText={setSearch}
+              returnKeyType="search"
+              autoCorrect={false}
             />
           </>
         }

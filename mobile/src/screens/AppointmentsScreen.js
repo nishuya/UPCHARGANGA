@@ -16,6 +16,7 @@ import { colors } from '../theme';
 const formatDate = (value) => {
   if (!value) return 'Date unavailable';
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Date unavailable';
   return date.toLocaleDateString(undefined, {
     day: '2-digit',
     month: 'short',
@@ -133,9 +134,12 @@ export default function AppointmentsScreen({ navigation }) {
             <Text style={styles.doctorName}>Dr. {item.doctor?.user?.fullName || 'Doctor'}</Text>
             <Text style={styles.hospitalName}>{item.hospital?.name || 'Hospital'}</Text>
             <View style={styles.appointmentMeta}>
-              <Text style={styles.token}>Token #{item.tokenNumber}</Text>
+              <Text style={styles.token}>Token #{item.tokenNumber ?? 'N/A'}</Text>
               <Text style={styles.row}>
-                {formatDate(item.appointmentDate)} · {item.timeSlot?.start || 'Time'}–{item.timeSlot?.end || ''}
+                {formatDate(item.appointmentDate)}
+                {item.timeSlot?.start
+                  ? ` · ${item.timeSlot.start}${item.timeSlot.end ? `–${item.timeSlot.end}` : ''}`
+                  : ''}
               </Text>
             </View>
             <Text style={styles.reference}>Ref: {item.bookingNumber || '—'}</Text>
@@ -279,7 +283,8 @@ const styles = StyleSheet.create({
     marginTop: 13,
     paddingTop: 11,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     gap: 8,
   },

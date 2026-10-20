@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '../context/AuthContext';
 import { colors, logoUri } from '../theme';
@@ -61,10 +62,15 @@ export default function AuthScreen() {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
+  const emailInput = useRef(null);
+  const phoneInput = useRef(null);
+  const passwordInput = useRef(null);
 
   const { signIn, signUp } = useAuth();
 
   const handleSubmit = async () => {
+    if (submitLock.current) return;
     if (!isLogin && password.length < 6) {
       Alert.alert('Invalid password', 'Password must be at least 6 characters long.');
       return;
@@ -79,6 +85,7 @@ export default function AuthScreen() {
       return;
     }
 
+    submitLock.current = true;
     setSubmitting(true);
     try {
       if (isLogin) {
@@ -95,16 +102,22 @@ export default function AuthScreen() {
     } catch (error) {
       Alert.alert(isLogin ? 'Login failed' : 'Registration failed', getAuthenticationErrorMessage(error));
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.wrapper}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'right', 'bottom', 'left']}>
+      <KeyboardAvoidingView
+        style={styles.wrapper}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         <View style={styles.card}>
           <View style={styles.brandRow}>
             <Image source={{ uri: logoUri }} style={styles.logo} resizeMode="contain" />
@@ -130,12 +143,17 @@ export default function AuthScreen() {
                 placeholder="Full name"
                 placeholderTextColor={colors.textSubtle}
                 autoCapitalize="words"
+                accessibilityLabel="Full name"
+                autoComplete="name"
+                returnKeyType="next"
+                onSubmitEditing={() => emailInput.current?.focus()}
               />
             </>
           )}
 
           <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
           <TextInput
+            ref={emailInput}
             style={styles.input}
             value={email}
             onChangeText={setEmail}
@@ -143,36 +161,57 @@ export default function AuthScreen() {
             placeholderTextColor={colors.textSubtle}
             keyboardType="email-address"
             autoCapitalize="none"
+            accessibilityLabel="Email address"
+            autoComplete="email"
+            returnKeyType="next"
+            onSubmitEditing={() =>
+              isLogin ? passwordInput.current?.focus() : phoneInput.current?.focus()
+            }
           />
 
           {!isLogin && (
             <>
               <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
               <TextInput
+                ref={phoneInput}
                 style={styles.input}
                 value={phone}
                 onChangeText={setPhone}
                 placeholder="Phone number"
                 placeholderTextColor={colors.textSubtle}
                 keyboardType="phone-pad"
+                accessibilityLabel="Phone number"
+                autoComplete="tel"
+                returnKeyType="next"
+                onSubmitEditing={() => passwordInput.current?.focus()}
               />
             </>
           )}
 
           <Text style={styles.fieldLabel}>PASSWORD</Text>
           <TextInput
+            ref={passwordInput}
             style={styles.input}
             value={password}
             onChangeText={setPassword}
             placeholder="••••••••"
             placeholderTextColor={colors.textSubtle}
             secureTextEntry
+            accessibilityLabel="Password"
+            returnKeyType="done"
+            onSubmitEditing={handleSubmit}
           />
           {!isLogin && (
             <Text style={styles.passwordHint}>Use 6–12 characters. Any characters are allowed.</Text>
           )}
 
-          <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityState={{ disabled: submitting }}
+            style={[styles.primaryButton, submitting && styles.primaryButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={submitting}
+          >
             <Text style={styles.primaryButtonText}>
               {submitting ? 'Please wait…' : isLogin ? 'Log in to UpcharGanga' : 'Create account'}
             </Text>
@@ -188,11 +227,16 @@ export default function AuthScreen() {
           </Text>
         </View>
       </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.brandLight,
+  },
   wrapper: {
     flex: 1,
     backgroundColor: colors.brandLight,
@@ -275,6 +319,9 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
     marginTop: 8,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.6,
   },
   primaryButtonText: {
     color: '#fff',

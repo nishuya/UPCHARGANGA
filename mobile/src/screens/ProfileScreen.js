@@ -1,5 +1,13 @@
 import React from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme';
@@ -7,21 +15,37 @@ import { colors } from '../theme';
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = React.useState(false);
+  const logoutInProgress = React.useRef(false);
+  const profileDateOfBirth = user?.dateOfBirth ? new Date(user.dateOfBirth) : null;
+  const formattedDateOfBirth =
+    profileDateOfBirth && !Number.isNaN(profileDateOfBirth.getTime())
+      ? profileDateOfBirth.toLocaleDateString(undefined, {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        })
+      : '—';
 
   const handleLogout = async () => {
-    if (loggingOut) return;
+    if (logoutInProgress.current) return;
+    logoutInProgress.current = true;
     setLoggingOut(true);
     try {
       await signOut();
     } catch (error) {
       Alert.alert('Logout failed', 'Please try again.');
     } finally {
+      logoutInProgress.current = false;
       setLoggingOut(false);
     }
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.header}>Profile</Text>
       <Text style={styles.subtitle}>Your UpcharGanga account information.</Text>
 
@@ -45,15 +69,7 @@ export default function ProfileScreen() {
 
         <View style={styles.divider} />
         <Text style={styles.label}>Date of birth</Text>
-        <Text style={styles.value}>
-          {user?.dateOfBirth
-            ? new Date(user.dateOfBirth).toLocaleDateString(undefined, {
-                day: '2-digit',
-                month: 'short',
-                year: 'numeric',
-              })
-            : '—'}
-        </Text>
+        <Text style={styles.value}>{formattedDateOfBirth}</Text>
       </View>
 
       <TouchableOpacity
@@ -69,7 +85,7 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>Log out</Text>
         )}
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -77,7 +93,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  content: {
     padding: 20,
+    paddingBottom: 32,
+    flexGrow: 1,
   },
   header: {
     fontSize: 28,
